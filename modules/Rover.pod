@@ -1,0 +1,336 @@
+=head1 NAME
+
+Rover.pm - Rover core module for perl
+
+=head1 VERSION
+
+0.01
+
+=head1 USAGE
+
+  ##### Example commands.run #####
+  #
+  # Specify that Linux hosts will run the Lin_Cmnds ruleset
+  Linux:Lin_Cmnds;
+
+  # Set general configuration options
+  GENERAL:{
+
+    # Determine output settings
+    $Rover::debug = 1;
+
+    # Set up prompt, and prompt force just in case
+    $Rover::user_prompt = '\$\s$';
+    $Rover::user_prompt_force = '$ ';
+
+    # Add custom modules during runtime
+    use CustomModule;
+    ...
+  };
+
+  # Specify exactly what is to be run on an OS
+  Lin_Cmnds:{
+    ...
+
+  };
+  ###########  end  ############
+
+The commands.run file is the primary configuration item for rover. This is
+where rover is configured, modules are imported, and commands are gathered 
+to be executed on a specific OS type.
+
+Rover relies on custom built modules in order to function correctly.
+Several modules already ship with rover, and may accomplish everything
+one needs to do remote administration.
+
+Modules included with Rover:
+  Shell_Access_Routines.pm
+  Root_Access_Routines.pm
+  RunCommands.pm
+  File_Transfer.pm
+
+=head1 FILES
+
+=over 4
+
+=item commands.run
+
+The commands.run file, by default is located in the current working directory.
+The name and location can be overriden from the command line (using rover.pl).
+
+This configuration file has three sections: OS ruleset definition, General
+configuration, and Ruleset definitions.
+
+The OS ruleset definition defines what rulesets will be executed on a particular
+OS.  Alternativly, the reserved word "ALL" (all caps) can be used to specify all
+OS's.  Valid OS names are any value returned by "uname -s".  Spaces are allowed 
+before and after, however, there should be no space between the OS, colon 
+separator, and the ruleset name.
+
+Syntax for OS section is:
+
+    <OS Name>:<Ruleset Name>;
+
+The general configuration section consist of Perl code that will be executed 
+durring configuration.  Any custom modules that are to be loaded should be placed 
+here, along with global variables that are to be overidden.  The general 
+configuration section takes the same form as a ruleset definition, except the 
+rule name is "GENERAL".
+
+Syntax for the general configuration section is as follows:
+
+    GENERAL:{
+      use <Custom Module>;
+      [ other inline perl commands ];
+      ...
+    };
+
+The ruleset definition section defines what is to be done in a particular rule.
+Each rule will have in it functions to execute with one parameter.  These are
+typically functions defined by modules loaded via the general configuration
+section.  Valid ruleset names can only consist of valid Perl variable characters.
+Please refer to Perl documentation for further explenation.
+
+Syntax for ruleset definitions are as follows:
+
+    <Ruleset name>:{
+        <command>(parameter);
+        ...
+    };
+
+Whith expert mode turned on ($Rover::export_mode = 1;), code within all releset
+definitions will be executed as blocks of Perl code.  This is usefull if you 
+what to introduce loops or condition statements.  Be advised, however, that
+when using expert mode, custom modules are not parsed and will have to be passed
+the appropriate values.
+
+For example, when in normal mode, if RunCommands.pm is used, executing a complicated
+command such as "ps -ef|awk 'NR > 1 {print $1}'|sort -n|uniq" within the
+"ALL_Cmnds" ruleset would look like this:
+
+      ALL_Cmnds:{
+          execute(ps -ef|awk 'NR > 1 {print $1}'|sort -n|uniq);
+      };
+
+However, when using expert mode, you must pass the argument as a scalar, and
+include the expect object, hostname, and os type as follows:
+
+      ALL_Cmnds:{
+          execute('ps -ef|awk \'NR > 1 {print $1}\'|sort -n|uniq',$exp_obj,$hostname,$os_type);
+      };
+
+Making sure, as is shown in this example, to escape the string properly.
+
+=item hosts.txt
+
+=head1 MODULES
+
+There are 4 types of modules that can be build to extend Rover functionality:
+Shell access routines, root access routines, root password storage routines,
+and custom expect modules.
+
+All modules have access to various Rover configuration variables.  Please see
+the VARIABLES section for details regarding these.
+
+When writing custom modules, it is extremly helpful to observ the debug option
+when deciding to print to standard out.  $Rover::debug generally has three levels
+of operation: 0 = Error output only, 1 = Standard messages, >1 = Debugging
+output.
+
+=item Shell access routines
+
+The Shell_Access_Routines.pm module already ships with Rover.  This provids 
+means of logging into a remote server via ssh, telnet, or rlogin.  This should
+be all that is ever needed to create a shell expect object for Rover.
+
+In order to write a custom shell access routine, the following items must be
+considered.
+
+1. Rover will call your shell access routine if the name of the function exists
+inside the @Rover::shell_access_routines array.
+
+2. Rover will pass only the hostname/ip address of the server needing shell access.
+
+3. Rover expects an Expect.pm object or error code to be returned.  Error codes are:
+     0 = Failed password
+    -1 = Profile error
+    -2 = Network connection error
+
+4. Global variables to consider when writing custom shell access routines:
+    $Rover::user
+    @Rover::user_credentials
+    $Rover::user_prompt
+    $Rover::user_prompt_force
+    $Rover::logs_dir
+
+=item Root access routines
+
+Root_Access_Routines.pm module, which also ships with Rover, supplies methods
+of gaining elevated priviledges for user root, via the "su" and "sudo" command.
+Read the appropriate documentation regarding its usage.
+
+For custom modules, The following items must be considerd:
+
+1. Rover will call root access routines stored in @Rover::root_shell_access_routines
+array.
+
+2. Rover will call each root access routine with two arguments, the Expect.pm
+object, and the hostname.
+
+3. Routines must exit with either success or failure.
+
+4. Relavent variables are as follows:
+    %Rover::root_password_hash
+    @Rover::root_password_list
+
+=item Root password storage
+
+Rover, by default, will gather a list of root passwords from the command line and
+stuff them into @Rover::root_password_list.  However, as more complicated 
+environments emerge, and secure password storage solutions vary, Rover provides
+a mechanism to extend root password collections.
+
+Writing a root password storage module is extremly easy, Rover does not supply
+a function with any parameters, and only checks for success or failure on completion.
+In order to get your storage routine to run during Rover execution, the name
+must be pushed onto the @Rover::root_password_storage_routines array.
+
+The expected process to occure is for root passwords to be placed into the global
+hash %Rover::root_password_hash, with the key being the hostname/ip, and the value
+being the root password.  Alternativly, populating @Rover::root_password_list could
+be usefull as well.
+
+As for how root passwords are gathered is entirely up to the programmer.
+
+=item Custom expect module
+
+Once all the objectives above have been complieted (that is you have an Expect
+object created with shell/root access to a remote Unix/Linux system), the true
+value of Rover lies in its ability to use this access to run abitrary administrative
+functions.
+
+Rover ships a very basic RunCommands.pm module, which exports the execute() perl
+routine.  execute() simply runs whatever is passed as an argument on the remote
+host.
+
+For more advanced tasks, custom modules must be written and imported during runtime
+for rover to utilize them.  Considerations are as follows:
+
+1. Custom modules should exist in the "modules" directory.
+
+2. Modules are not automatically imported, users must spacify to use them in the
+commands.run file, typically in the GENERAL section.
+
+3. Exported commands ran inside a ruleset are called with four parameters:
+1. Arguments supplied inside commands.run ruleset definition, 2. The expect
+object, 3. Hostname/IP address, 4. OS type.
+
+4. Return values should be true or false, execution on any particular host will
+be terminated when one ruleset command fails.
+
+5. Routines will be ran in parralell and should be thread safe (regardless of
+the fact that Expect.pm is not thread safe).
+
+See the FILES section for more details on importing custom modules and executing
+them inside rulesets.
+
+=head1 VARIABLES
+
+=item $Rover::user
+
+=item @Rover::user_credentials
+
+=item $Rover::user_prompt
+
+=item $Rover::user_prompt_force
+
+=item $Rover::debug
+
+=item $Rover::expert_mode
+
+=item %Rover::rulesets
+
+=item $Rover::use_threads
+
+=item $Rover::paralell_process_count
+
+=item @Rover::hosts_list
+
+=item $Rover::config_file
+
+=item $Rover::hosts_file
+
+=item $Rover::logs_dir
+
+=item $Rover::ipc_fifo
+
+=item @Rover::AIX
+
+=item @Rover::SunOS
+
+=item @Rover::HP_UX
+
+=item @Rover::BSD_OS
+
+=item @Rover::Linux
+
+=item @Rover::ALL
+
+=item @Rover::shell_access_routines
+
+=item @Rover::root_shell_access_routines
+
+=item @Rover::root_password_storage_routines
+
+=item %Rover::root_password_hash
+
+=item @Rover::root_password_list
+
+=item $Rover::report_semaphore
+
+=item @Rover::report_failed_hosts
+
+=item $Rover::report_failed_profile
+
+=item $Rover::report_failed_password
+
+=item $Rover::report_failed_network
+
+=item $Rover::report_failed_root
+
+=item $Rover::report_failed_runrules
+
+=item $Rover::parent_id
+
+=item $Rover::global_process_count
+
+=item @Rover::global_process_completed_hosts
+
+=item %Rover::global_process_current_host
+
+=item %Rover::global_process_current_status
+
+=head1 AUTHORS
+
+  Bryan A Bueter
+  Erik McLaughlin
+  Jayson A Robinson
+
+=head1 LICENSE
+
+This module can be used under the same terms as Perl.
+
+=head1 DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
+WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.
+

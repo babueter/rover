@@ -1,0 +1,13 @@
+0.02
+----
+* bugfix: failed get_root reporting fixed
+* soft_close() all connections after commands are ran
+* changed -d option to set $Rover::debug = 2
+* changed -D option to turn Expect debuging on
+* now printing error messages to STDERR
+* fixed some debug printing, added more debug level 1 messages
+
+0.01
+----
+* added expert mode for command interpretation.
+* re-organized get_shell/get_root logic.

@@ -1,0 +1,16 @@
+ALL:ALL_Cmnds;
+
+GENERAL:{
+	$Rover::debug = 1;
+	$Rover::user_prompt = '\]\~\$ ';
+	$Rover::user_prompt_force = ']~$ ';
+
+	use Shell_Access_Routines;
+	use Root_Access_Routines;
+
+	use RunCommands;
+	use File_Transfer;
+};
+
+ALL_Cmnds:{
+};
