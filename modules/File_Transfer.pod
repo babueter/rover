@@ -29,7 +29,7 @@ File_Transfer.pm - File Transfer module for Rover
 
   };
 
-File_Transfer will determine the best method of transfering the file
+File_Transfer will determine the best method of transferring the file
 based on service availability and the value of
 $File_Trnasfer::preferred_protocol.  The public functions available
 are as follows:
@@ -43,6 +43,9 @@ Also these configuration variables can be set to manipulate the behavior of File
   $File_Transfer::login_timeout
   $File_Transfer::transfer_timeout
   $File_Trnasfer::preferred_protocol
+  $File_Transfer::transfer_as_self
+  $File_Transfer::rcp_as_self
+  $File_Transfer::scp_on_failed_sftp
 
 
 =head1 DESCRIPTION
@@ -91,10 +94,24 @@ Acceptable values are "sftp" or "ftp".  This determines what protocol
 of file transfer to "prefer" for each host.  File_Transfer will still check
 the service and use an alternative protocol if this one is not available.
 
+=item $File_Trnasfer::transfer_as_self
+
+If set to 0, transfers will be done as the $Rover::user user.  If set to 1,
+username will not be specified when calling file transfer programs.
+
+=item $File_Trnasfer::rcp_as_self
+
+This is depreciated for the $File_Trnasfer::transfer_as_self variable.
+
+=item $File_Transfer::scp_on_failed_sftp
+
+If ssh is listening on port 22, and sftp failes, setting this value to 1
+will try to scp the file.  The default value of this is 0.
+
 
 =head1 FAQ - Frequently Asked Questions
 
-This is sofar my own list, so this is sure to expand over time.
+This is so far my own list, so this is sure to expand over time.
 
 =head2 How can I force ftp over sftp?
 

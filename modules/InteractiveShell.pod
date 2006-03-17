@@ -1,0 +1,76 @@
+=head1 NAME
+
+InteractiveShell.pm - Interactive Shell module for Rover
+
+
+=head1 VERSION
+
+1.00
+
+
+=head1 SYNOPSYS
+
+  # Format for commands.run
+  GENERAL:{
+    ...
+
+    # Add module to rover runtime environment
+    use InteractiveShell;
+
+  };
+
+  Ruleset:{
+    ...
+
+    # Get an interactive shell for current host
+    shell();
+
+  };
+
+The public functions available are as follows:
+
+  InteractiveShell::shell()
+
+=head1 DESCRIPTION
+
+  This module simply drops you to an interactive shell after
+  authentication and, if specified, root access is aquired.
+
+  It is not intended for you to log out, Rover will handle that
+  after your session is complete.  For this reason, CTRL+D is 
+  mapped to return you to rover functionalilty.
+
+  This module should work well with other modules, however
+  not much has been tested.  All output will be logged just
+  like everything else.
+
+=head1 USAGE
+
+=over 4
+
+=item shell();
+
+
+=head1 AUTHORS
+
+Bryan Bueter
+
+
+=head1 LICENSE
+
+This module can be used under the same license as Perl.
+
+
+=head1 DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
+WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+DAMAGE.

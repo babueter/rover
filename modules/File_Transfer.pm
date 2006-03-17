@@ -11,6 +11,7 @@
 #
 #	scan_open_port()	determine_file_transfer_method()
 #	sftp_get_expect_obj()	sftp_put_file()		sftp_get_file()
+#	scp_get_file()		scp_put_file()
 #	ftp_get_obj()		ftp_put_file()		ftp_get_file()
 #	rcp_put_file()		rcp_get_file()
 #	put_file()		get_file()
@@ -36,8 +37,12 @@ BEGIN {
   $File_Transfer::login_timeout = 5;
   $File_Transfer::transfer_timeout = 300;
 
-  $File_Trnasfer::preferred_protocol = undef;
-  @File_Transfer::protocol_list = ("sftp","ftp");
+  $File_Transfer::transfer_as_self = 0;
+  $File_Transfer::rcp_as_self = 0;
+  $File_Transfer::scp_on_failed_sftp = 0;
+
+  $File_Transfer::preferred_protocol = undef;
+  @File_Transfer::protocol_list = ("sftp","ftp","rcp");
   %File_Transfer::proto_ports = ("sftp" => 22, "ftp" => 21, "rcp" => 514);
 
   %File_Transfer::ftp_expect_objects;
@@ -59,11 +64,14 @@ sub scan_open_port {
 
   my $remote;
   eval {
+    local $SIG{ALRM} = sub { die "scan_open_port: failed to connect to $port\n"; };
+    alarm 2;
     $remote = IO::Socket::INET->new(
       Proto => "tcp",
       PeerAddr => $hostname,
       PeerPort => "($port)",
     ) or die $@ ;
+    alarm 0;
   };
 
   if ( ! $@ ) {
@@ -143,20 +151,30 @@ sub sftp_get_expect_obj {
 #
   my $hostname = shift;
 
-  if ( $File_Transfer::ftp_expect_objects{$hostname} ) {
+  if ( $File_Transfer::ftp_expect_objects{$hostname} != 0 ) {
     print "\tDEBUG: file_transfer: sftp_get_expect_obj: Returning existing sftp expect object\n" if $Rover::debug > 1;
     return $File_Transfer::ftp_expect_objects{$hostname};
   }
 
-  my $exp_obj = Expect->spawn("sftp $Rover::user\@$hostname")
-    or die "Error: File_Transfer: Cannot spawn sftp object\n";
+  my $exp_obj;
+  if ( $File_Transfer::transfer_as_self ) {
+    $exp_obj = Expect->spawn("sftp $hostname")
+      or die "Error: File_Transfer: Cannot spawn sftp object\n";
+
+  } else {
+    $exp_obj = Expect->spawn("sftp $Rover::user\@$hostname")
+      or die "Error: File_Transfer: Cannot spawn sftp object\n";
+  }
 
   $exp_obj->log_file("$Rover::logs_dir/$hostname.log");
 
   my @user_credentials = @Rover::user_credentials;
+  my $starting_credentials = @user_credentials;
+
   my $spawn_ok = 0;
   my $logged_in = 1;
   my $failure_code;
+  my $failure_count = 0;
 
   $exp_obj->expect($File_Transfer::login_timeout,
 	[ qr'key fingerprint', sub { my $fh = shift;
@@ -173,6 +191,7 @@ sub sftp_get_expect_obj {
 		my $fh = shift;
 		print $fh "$Rover::user\n";
 		exp_continue; } ],
+	[ 'ermission [dD]enied', sub { $failure_count++; $logged_in = 0; $failure_code = 0; exp_continue; } ],
 	[ 'buffer_get', sub { $logged_in = 0; $failure_code = 0; } ],
 	[ 'ssh_exchange_identification', sub { $logged_in = 0; $failure_code = 0; } ],
 	[ 'assword:', sub { $pass = shift @user_credentials;
@@ -204,8 +223,13 @@ sub sftp_get_expect_obj {
 	[ 'ew password', sub { $logged_in = 0; $failure_code = 0; } ],
 	[ 'Challenge', sub { $logged_in = 0; $failure_code = 0; } ],
 	[ eof => sub { if ($spawn_ok == 1) {
-		  $logged_in = 0;
-		  $failure_code = 0;
+		  if ( $starting_credentials != $failure_count ) {
+		    $logged_in = 0;
+		    $failure_code = -1;
+		  } else {
+		    $logged_in = 0;
+		    $failure_code = 0;
+		  }
 		} else {
 		  $logged_in = 0;
 		  $failure_code = -2;
@@ -216,12 +240,57 @@ sub sftp_get_expect_obj {
   $exp_obj->clear_accum();
   if ( ! $logged_in ) {
     print "\tDEBUG: file_transfer: sftp_get_expect_obj: failed to get sftp object, code: $failure_code\n" if $Rover::debug > 1;
-    
-    return(0);
+
+    $File_Transfer::ftp_expect_objects{$hostname} = -1;
+    return($failure_code);
   }
 
   $File_Transfer::ftp_expect_objects{$hostname} = $exp_obj;
   return($exp_obj);
+}
+
+sub scp_put_file {
+# put local_file to remote_file using scp
+#
+  my $hostname = shift;
+  my $local_file = shift;
+  my $remote_file = shift;
+
+  my $scp_command = "";
+  if ( ! $File_Transfer::transfer_as_self ) {
+    $scp_command = "scp $local_file $Rover::user\@$hostname:$remote_file";
+  } else {
+    $scp_command = "scp $local_file $hostname:$remote_file";
+  }
+
+  my $got_file = 0;
+  my @user_credentials = @Rover::user_credentials;
+  while ( (my $pass = shift @user_credentials) && ! $got_file ) {
+
+    my $exp_obj = Expect->spawn($scp_command)
+      or die "Error: File_Transfer: Cannot spawn scp object\n";
+
+    $exp_obj->log_file("$Rover::logs_dir/$hostname.log");
+
+    $exp_obj->expect($File_Transfer::transfer_timeout,
+        [ 'assword', sub { my $fh = shift;
+		$fh->send("$pass\n");
+		exp_continue; }, ],
+        [ 'denied', sub { $got_file = 0; } ],
+        [ 'lost connection', sub { $got_file = 0; } ],
+        [ 'o such file', sub { $got_file = 0; } ],
+        [ '100%', sub { $got_file = 1; } ],
+        [ 'eof' => sub { $got_file = 1; }, ], );
+
+    $exp_obj->hard_close();
+  }
+
+  if ( ! $got_file ) {
+    print "$hostname:\tfile_transfer: scp_put: FAILED: $scp_command\n" if $Rover::debug > 1;
+    return(0);
+  }
+
+  return(1);
 }
 
 sub sftp_put_file {
@@ -233,6 +302,16 @@ sub sftp_put_file {
 
   my $exp_obj = sftp_get_expect_obj($hostname);
   if ( ! $exp_obj ) { return(0); }
+
+  if ( $exp_obj < 0 ) {
+    if ( ! $File_Transfer::scp_on_failed_sftp ) { return(0); }
+
+   # We tried to get an object but failed.  Try SCP
+   #
+    print "$hostname:\tWarning: sftp_put_file: Could not get SFTP object, using SCP\n" if $Rover::debug > 0;
+    my $status = scp_put_file($hostname, $local_file, $remote_file);
+    return($status);
+  }
 
   $exp_obj->send("put $local_file $remote_file\n");
   select(undef, undef, undef, 0.25);
@@ -275,6 +354,50 @@ sub sftp_put_file {
   return(1);
 }
 
+sub scp_get_file {
+# get remote_file to local_file using scp
+#
+  my $hostname = shift;
+  my $remote_file = shift;
+  my $local_file = shift;
+
+  my $scp_command = "";
+  if ( ! $File_Transfer::transfer_as_self ) {
+    $scp_command = "scp $Rover::user\@$hostname:$remote_file $local_file";
+  } else {
+    $scp_command = "scp $hostname:$remote_file $local_file";
+  }
+
+  my $got_file = 0;
+  my @user_credentials = @Rover::user_credentials;
+  while ( (my $pass = shift @user_credentials) && ! $got_file ) {
+
+    my $exp_obj = Expect->spawn($scp_command)
+      or die "Error: File_Transfer: Cannot spawn scp object\n";
+
+    $exp_obj->log_file("$Rover::logs_dir/$hostname.log");
+
+    $exp_obj->expect($File_Transfer::transfer_timeout,
+        [ 'assword', sub { my $fh = shift;
+		$fh->send("$pass\n");
+		exp_continue; }, ],
+        [ 'denied', sub { $got_file = 0; } ],
+        [ 'lost connection', sub { $got_file = 0; } ],
+        [ 'o such file', sub { $got_file = 0; } ],
+        [ '100%', sub { $got_file = 1; } ],
+        [ 'eof' => sub { $got_file = 1; }, ], );
+
+    $exp_obj->hard_close();
+  }
+
+  if ( ! $got_file ) {
+    print "$hostname:\tfile_transfer: scp_get: FAILED: $scp_command\n" if $Rover::debug > 1;
+    return(0);
+  }
+
+  return(1);
+}
+
 sub sftp_get_file {
 # get remote_file to local_file using sftp
 #
@@ -284,6 +407,16 @@ sub sftp_get_file {
 
   my $exp_obj = sftp_get_expect_obj($hostname);
   if ( ! $exp_obj ) { return(0); }
+
+  if ( $exp_obj < 0 ) {
+    if ( ! $File_Transfer::scp_on_failed_sftp ) { return(0); }
+
+   # We tried to get an object but failed.  Try SCP
+   #
+    print "$hostname:\tWarning: sftp_get: Could not get SFTP object, using SCP\n" if $Rover::debug > 0;
+    my $status = scp_get_file($hostname, $remote_file, $local_file);
+    return($status);
+  }
 
   $exp_obj->send("get $remote_file $local_file\n");
   select(undef, undef, undef, 0.25);
@@ -340,11 +473,20 @@ sub ftp_get_obj {
 
   my $ftp_obj = Net::FTP->new($hostname);
 
+  my $logged_in = 0;
   foreach my $pass (@Rover::user_credentials) {
-    if ( $ftp_obj->login($Rover::user, $pass) ) {
-      $ftp_obj->binary;
-      $logged_in = 1;
-      last;
+    if ( $File_Transfer::transfer_as_self ) {
+      if ( $ftp_obj->login($ENV{'USER'}, $pass) ) {
+        $ftp_obj->binary;
+        $logged_in = 1;
+        last;
+      }
+    } else {
+      if ( $ftp_obj->login($Rover::user, $pass) ) {
+        $ftp_obj->binary;
+        $logged_in = 1;
+        last;
+      }
     }
   }
 
@@ -365,6 +507,8 @@ sub ftp_put_file {
   my $remote_file = shift;
 
   my $ftp_obj = ftp_get_obj($hostname);
+
+  if ( ! $ftp_obj ) { return(0); }
 
   if ( ! $ftp_obj->put($local_file, $remote_file) ) {
     return(0);
@@ -400,7 +544,37 @@ sub rcp_put_file {
   my $local_file = shift;
   my $remote_file = shift;
 
+  if ( $File_Transfer::rcp_as_self ) {
+    print "Warning: Depreciated use of rcp_as_self, please use \$File_Transfer::transfer_as_self\n";
+    $File_Transfer::transfer_as_self = 1;
+  }
+
+  my $rcp_command = "";
+  if ( ! $File_Transfer::transfer_as_self ) {
+    $rcp_command = "rcp $local_file $Rover::user\@$hostname:$remote_file";
+  } else {
+    $rcp_command = "rcp $local_file $hostname:$remote_file";
+  }
+
+  my $exp_obj = Expect->spawn($rcp_command)
+    or die "Error: File_Transfer: Cannot spawn rcp object\n";
+
+  $exp_obj->log_file("$Rover::logs_dir/$hostname.log");
+
+  my $got_file = 1;
+  $exp_obj->expect($File_Transfer::transfer_timeout,
+	[ 'denied', sub { $got_file = 0; } ],
+	'-re', 'eof', );
+
+  if ( ! $got_file ) {
+    print "$hostname:\tfile_transfer: rcp_put: FAILED: $rcp_command\n" if $Rover::debug > 1;
+    return(0);
+  }
+
+  $exp_obj->soft_close();
+  return(1);
 }
+
 sub rcp_get_file {
 # Get remote_file to local_file using rcp+expect.  This does not re-use expect
 # objects as the rcp program exits after completion
@@ -409,6 +583,35 @@ sub rcp_get_file {
   my $remote_file = shift;
   my $local_file = shift;
 
+  if ( $File_Transfer::rcp_as_self ) {
+    print "Warning: Depreciated use of rcp_as_self, please use \$File_Transfer::transfer_as_self\n";
+    $File_Transfer::transfer_as_self = 1;
+  }
+
+  my $rcp_command = "";
+  if ( ! $File_Transfer::transfer_as_self ) {
+    $rcp_command = "rcp $Rover::user\@$hostname:$remote_file $local_file";
+  } else {
+    $rcp_command = "rcp $hostname:$remote_file $local_file";
+  }
+
+  my $exp_obj = Expect->spawn($rcp_command)
+    or die "Error: File_Transfer: Cannot spawn rcp object\n";
+
+  $exp_obj->log_file("$Rover::logs_dir/$hostname.log");
+
+  my $got_file = 1;
+  $exp_obj->expect($File_Transfer::transfer_timeout,
+        [ 'denied', sub { $got_file = 0; } ],
+        '-re', 'eof', );
+
+  if ( ! $got_file ) {
+    print "$hostname:\tfile_transfer: rcp_get: FAILED: $rcp_command\n" if $Rover::debug > 1;
+    return(0);
+  }
+
+  $exp_obj->soft_close();
+  return(1);
 }
 
 sub put_file {
@@ -418,6 +621,8 @@ sub put_file {
   my $os = shift;
 
   my ($local_file,$remote_file) = split(",",$args);
+  $local_file =~ s/^[\t\s]*// ;
+  $local_file =~ s/[\t\s]*^// ;
 
   my $result = 0;
   my $put_file_routine = determine_file_transfer_method($hostname,put);
@@ -438,6 +643,8 @@ sub get_file {
   my $os = shift;
 
   my ($remote_file,$local_file) = split(",",$args);
+  $local_file =~ s/^[\t\s]*// ;
+  $local_file =~ s/[\t\s]*^// ;
   if ( $File_Transfer::append_hostname ) {
     $local_file .= ".$hostname";
   }

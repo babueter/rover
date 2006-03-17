@@ -1,16 +1,34 @@
-ALL:ALL_Cmnds;
+Windows:WIN;
+SunOS:ALL_Cmnds;
 
 GENERAL:{
+	$Rover::root_access_required = 0;
 	$Rover::debug = 1;
-	$Rover::user_prompt = '\]\~\$ ';
-	$Rover::user_prompt_force = ']~$ ';
+
+	$Rover::user_prompt = '[>#\$] ';
+	$Rover::user_prompt_force = '$ ';
 
 	use Shell_Access_Routines;
 	use Root_Access_Routines;
 
+	# This line will force forks = 1
+	# use InteractiveShell;
+	use Password;
+
 	use RunCommands;
 	use File_Transfer;
+	use User_Admin;
 };
 
+WIN:{
+	execute(netstat -r);
+	put_file(ChangeLog,ChangeLog);
+	execute(dir);
+	execute(ipconfig /all);
+	execute(calc);
+	execute(notepad);
+};
 ALL_Cmnds:{
+	execute(uptime);
+	execute(df -k);
 };

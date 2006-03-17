@@ -1,18 +1,21 @@
-#!/opt/freeware/bin/perl -I./modules -I./contrib
-##!/usr/bin/perl -I./modules
+#!/usr/bin/perl -I./modules -I./contrib
 #****************************************************************************
 # Rover
 #
 #****************************************************************************
+use lib ("./contrib/Binary-Expect");
+
+use Config;
 use Rover;
 use Getopt::Std;
+
+my %get_opts;
 
 sub validate_opts {
 # This function gathers the options passed to rover and configures the
 # appropriate rover settings.
 #
-  my %get_opts;
-  if ( ! getopts('H:c:f:l:tdDhv', \%get_opts) ) {
+  if ( ! getopts('H:c:q:f:l:tdDhv', \%get_opts) ) {
     usage();
     return(0);
   }
@@ -39,7 +42,11 @@ sub validate_opts {
   }
 
   if ($get_opts{t}) {
-    $Rover::use_threads = 1;
+    if (! $Config{useithreads} ) {
+      print "Warning: Your version of perl does not support threading.  Threads will not be used\n\n";
+    } else {
+      $Rover::use_threads = 1;
+    }
   }
 
   if ($get_opts{d}) {
@@ -59,16 +66,17 @@ sub validate_opts {
 sub usage {
 # Print a nice little help page regarding the command line usage
 #
-  print "Usage: rover.pl [-H file] [-c file] [-l dir] [-f n] [-FdDhV]\n";
+  print "Usage: rover.pl [-H file] [-c file] [-l dir] [-f n] [-q cmnd] [-tdDh]\n";
   print "  -H file        File with a list of host names/ips. default is '$Rover::hosts_file'\n";
   print "  -c file        Rover commands file.  Default is $Rover::config_file.\n";
+  print "  -q cmnd        Quick command, execute 'cmnd' on remote hosts and exit.\n";
   print "  -l dir         Location of the logs directory.  All logs will be stored here.\n";
   print "  -f n           Use 'n' forks/threads in paralell for host processing\n";
   print "                 Default is $Rover::paralell_process_count.\n";
   print "  -t             Enable threads.  Default is to not use threads (Broken).\n";
-  print "  -d             Debug output, sets $Rover::debug = 2\n";
-  print "  -D             Verbose expect debug output, turns on Expect::Exp_Internal,\n";
-  print "                 $Expect::Log_Stdout, and $Expect::Debug = 3.\n";
+  print "  -d             Debug output, sets \$Rover::debug = 2\n";
+  print "  -D             Verbose expect debug output, turns on \$Expect::Exp_Internal,\n";
+  print "                 \$Expect::Log_Stdout, and sets \$Expect::Debug = 3.\n";
   print "  -h             Print this help message\n";
   print "\n";
 
@@ -187,6 +195,21 @@ if ( ! read_authentication() ) {
   exit(-1);
 }
 
+# If running a quick command, clear all others and set up platform rulesets
+#
+if ($get_opts{q}) {
+  my @os_list = ("AIX", "SunOS", "HP_UX", "BSD_OS", "Windows", "Linux", "ALL");
+  foreach (@os_list) {
+    my $os_name = "Rover::$_";
+    @$os_name = ();
+  }
+  push(my @tmp_array, "execute(". $get_opts{q} .");");
+  $Rover::rulesets{"Quick_Command"} = \@tmp_array;
+  push(@Rover::ALL, "Quick_Command");
+}
+
+my $start_time = time();
+
 # Start the real work, execute each process individually
 #
 process_hosts();
@@ -194,3 +217,5 @@ process_hosts();
 # All completed, report on findings.
 #
 report_completion_status();
+
+print "Finished. Elapsed time: ". (time() - $start_time) ." seconds.\n\n" if $Rover::debug;

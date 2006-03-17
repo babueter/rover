@@ -56,7 +56,9 @@ BEGIN {
   @Rover::SunOS = ();
   @Rover::HP_UX = ();
   @Rover::BSD_OS = ();
+  @Rover::Windows = ();
   @Rover::Linux = ();
+  @Rover::UNKNOWN = ();
   @Rover::ALL = ();
 
  # Global routines arrays
@@ -131,7 +133,7 @@ sub build_config {
 
      # rule definition
       if ($inrule) {
-        if ( m/};/ ) {
+        if ( m/^([\s\t])*};([\s\t])*$/ ) {
           $inrule = 0;
 
           if ( $current_rule ne "GENERAL" ) {
@@ -288,6 +290,10 @@ sub process_hosts_fork {
   my $hosts_process_count = int($hosts_count / $Rover::paralell_process_count);
   my $hosts_remainder = $hosts_count % $Rover::paralell_process_count;
 
+  if ( ! -p $Rover::ipc_fifo ) {
+    system("rm -f $Rover::ipc_fifo ; mknod $Rover::ipc_fifo p");
+  }
+
  # Do the actual forking
  #
   if ( $hosts_count < $Rover::paralell_process_count ) {
@@ -329,14 +335,15 @@ sub process_hosts_fork {
 
   my $remainder_children = $Rover::paralell_process_count - $hosts_remainder - 1;
   if ($iteration > $remainder_children ) {
-    push(@child_hosts, $Rover::hosts_list[$iteration - $hosts_remainder]);
+    push(@child_hosts, $Rover::hosts_list[$Rover::paralell_process_count *
+	$hosts_process_count + ($iteration % $hosts_remainder)]);
   }
 
   open(STDERR, ">&STDOUT") || die "Error: child job $iteration exiting due to stdout errors\n";
   select(STDERR); $| = 1;	# make unbuffered
   select(STDOUT); $| = 1;	# make unbuffered
 
-  open(FIFO_OUT,">$Rover::ipc_fifo");
+  open(FIFO_OUT,">$Rover::ipc_fifo") or die "Error: $$: Child could not open fifo '". $Rover::ipc_fifo ."' for writing\n";
   select((select(FIFO_OUT), $| = 1)[0]);
   foreach my $host_name (@child_hosts) {
     print "\tDEBUG: $$: Child processing host '$host_name'\n" if $Rover::debug > 1;
@@ -434,11 +441,8 @@ sub ipc_watcher_log_parse {
 # The parent process (i.e. the watcher) calls this routine to monitor child
 # activity.  No need to open any file handles prior to calling this.
 #
-  if ( ! -p $Rover::ipc_fifo ) {
-    system("rm -f $Rover::ipc_fifo ; mknod $Rover::ipc_fifo p");
-  }
 
-  open(FIFO_IN,$Rover::ipc_fifo);
+  open(FIFO_IN,$Rover::ipc_fifo) or die "Error: $$: Parent process could not open fifo '". $Rover::ipc_fifo ."' for reading\n";
   while (<FIFO_IN>) {
     chomp $_;
     my ($child_pid,$status,$hostname,$result) = split(':',$_);
@@ -515,21 +519,31 @@ sub run_rules {
       return($exp_obj);
     }
   }
+  $exp_obj->clear_accum();
 
  # Determine OS type and store results
  #
   my $os_type = "";
-  $exp_obj->clear_accum();
   $exp_obj->send("uname -a #UNAME\n");
   $exp_obj->expect(4,
 	[ 'HP-UX', sub { $os_type = 'HP_UX'; exp_continue; } ],
 	[ 'AIX', sub { $os_type = 'AIX'; exp_continue; } ],
 	[ 'SunOS', sub { $os_type = 'SunOS'; exp_continue; } ],
 	[ 'hostfax', sub { $os_type = 'hostfax'; exp_continue; } ],
+	[ 'not found', sub { $os_type = 'UNKNOWN'; exp_continue; } ],
+	[ 'syntax error', sub { $os_type = 'UNKNOWN'; exp_continue; } ],
 	[ 'BSD/OS', sub { $os_type = 'BSD_OS'; exp_continue; } ],
+	[ 'C:', sub { $os_type = 'Windows'; 
+			# Send appropriate return because \n didn't work.
+                        my $fh = shift;
+                        select(undef, undef, undef, $Shell_Access_Routines::my_slow);
+                        $fh->send(""); } ],
 	[ 'Linux', sub { $os_type = 'Linux'; exp_continue; } ],
-	[ timeout => sub { print STDERR "Error: running uname -a timed out, server may be running too slow\n"; } ],
+	[ timeout => sub { print STDERR "$hostname:\tError: running uname -a timed out, server may be running too slow\n"; } ],
 	'-re', $Rover::user_prompt, );
+
+  print "$hostname:\tWarning: unknown os type, running ALL and UNKNOWN commands\n" if $Rover::debug && $os_type eq 'UNKNOWN';
+  $exp_obj->clear_accum();
 
   my $os_name = "Rover::$os_type";
   my $success;
@@ -545,11 +559,11 @@ sub run_rules {
      # runtime errors here.  Hey, your the expert, use your own sanity checking!
      #
       if ( @{$Rover::rulesets{$_}} ) {
-        print "Running $os_type ruleset '$_' on host '$hostname'\n" if $Rover::debug;
+        print "$hostname:\trunning $os_type ruleset '$_' on host '$hostname'\n" if $Rover::debug;
         eval "@{$Rover::rulesets{$_}}";
 
         if ( $@ ) {
-          print STDERR "Error: ruleset encountered a fatal error: $@";
+          print STDERR "$hostname:\tError: ruleset encountered a fatal error: $@";
           $failed_commands++;
           $success = -4;
         };
@@ -568,11 +582,12 @@ sub run_rules {
 
         my $args_sub = substr($args,0,20);
         $args_sub .= "...";
-        print "$hostname:\trunning $subroutine($args_sub)\n";
+        print "$hostname:\trunning $subroutine($args_sub)\n" if $Rover::debug;
         $success = &$subroutine($args, $exp_obj, $hostname, $os_type);
 
         if (! $success) {
           $success = -4;
+          print "$hostname:\tError: $subroutine($args_sub) failed\n" if $Rover::debug;
           $failed_commands++;
           last;
         }
@@ -615,11 +630,11 @@ sub get_shell {
   foreach my $shell_access_routine (@Rover::shell_access_routines) {
    # Run each shell access routine, stop if one succeeds or no more routines left
    #
-    print "\tDEBUG: Attempting to gain shell access with routine $shell_access_routine\n" if $Rover::debug > 1;
+    print "\tDEBUG: $hostname: Attempting to gain shell access with routine $shell_access_routine\n" if $Rover::debug > 1;
     $exp_obj = &$shell_access_routine($hostname,$Rover::user,@Rover::user_credentials);
 
     if ( $exp_obj <= 0 ) {
-      print "Warning: shell access routine $shell_access_routine failed\n" if $Rover::debug > 1;
+      print "$hostname:\tWarning: shell access routine $shell_access_routine failed\n" if $Rover::debug > 1;
       if ( $exp_obj == 0 && $exp_obj == -1 ) { last; } # Dont continue if password or profile is wrong
 
     } else {
@@ -630,7 +645,7 @@ sub get_shell {
   if ( $exp_obj <= 0 ) {
    # Return code was an error, evaluate and increment appropriate counters
    #
-    print STDERR "Error: could not gain shell on '$hostname'.\n";
+    print STDERR "$hostname:\tError: could not gain shell on '$hostname'.\n";
     if ( $exp_obj == 0 ) {
       if ( $Rover::report_semaphore ) { $Rover::report_semaphore->down; };
       $Rover::report_failed_password++;
@@ -652,7 +667,7 @@ sub get_shell {
       if ( $Rover::report_semaphore ) { $Rover::report_semaphore->up; };
 
     } else {
-      print STDERR "Error: undefined return code from get_shell: $exp_obj, host: $hostname.\n";
+      print STDERR "$hostname:\tError: undefined return code from get_shell: $exp_obj, host: $hostname.\n";
     }
 
     if ( $Rover::report_semaphore ) { $Rover::report_semaphore->down; };
@@ -673,11 +688,11 @@ sub get_shell {
      # Iterate through any root shell access routines.  If we cant get root then increment
      # counters and return with error
      #
-      print "\tDEBUG: root_shell_access: attempting to get root with routine: '$routine'\n" if $Rover::debug > 1;
+      print "\tDEBUG: $hostname: root_shell_access: attempting to get root with routine: '$routine'\n" if $Rover::debug > 1;
       $result = &$routine($exp_obj,$hostname);
 
       if ( $result ) { last; }
-      print "Warning: root access routine failed: '$routine'\n" if $Rover::debug > 1;
+      print "$hostname:\tWarning: root access routine failed: '$routine'\n" if $Rover::debug > 1;
     }
     if ( ! $result ) {
       print "$hostname:\troot_access: FAILED to gain root access\n";

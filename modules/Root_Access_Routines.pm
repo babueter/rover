@@ -23,6 +23,7 @@ $Root_Access_Routines::VERSION = "1.00";
 BEGIN {
   $Root_Access_Routines::command_timeout = 3;
   $Root_Access_Routines::sudo_shell = '/bin/ksh';
+  $Root_Access_Routines::su_login = 1;
 
   push(@Rover::root_shell_access_routines, "get_root_by_su");
   push(@Rover::root_shell_access_routines, "get_root_by_sudo");
@@ -35,6 +36,28 @@ sub get_root_by_su {
 
   print "\tDEBUG: get_root_by_su: getting root for '$hostname'\n" if $Rover::debug > 1;
   $exp_obj->clear_accum();
+
+ # First check to see if we are root or not
+ #
+  $exp_obj->send("id\n");
+  select(undef, undef, undef, 0.25);
+  
+  my $bail = 0; # Bail if we timeout running id
+  
+  $exp_obj->expect($Root_Access_Routines::command_timeout,
+	[ 'uid=0', sub { $got_root = 1; exp_continue; } ],
+	[ timeout => sub { $bail = 1; } ],
+	'-re', $Rover::user_prompt,
+  );
+  
+  if ( $bail ) {
+    print "$hostname:\tTimed out running id, server may be too busy\n" if $Rover::debug;
+    return(0);
+  }
+  if ( $got_root ) {
+    print "$hostname:\tDEBUG: get_root_by_su: already root, returning success\n" if $Rover::debug > 1;
+    return(1);
+  }
 
   my @root_credentials;
   if ( $Rover::root_password_hash{$hostname} ) { push(@root_credentials, $Rover::root_password_hash{$hostname}); }
@@ -51,7 +74,11 @@ sub get_root_by_su {
 
   foreach my $root_pass ( @root_credentials ) {
     $exp_obj->clear_accum();
-    $exp_obj->send("su - \n");
+    if ( $Root_Access_Routines::su_login ) {
+      $exp_obj->send("su - \n");
+    } else {
+      $exp_obj->send("su \n");
+    }
     select(undef, undef, undef, 0.25);
 
     my $changed_prompt = 0;
@@ -96,6 +123,28 @@ sub get_root_by_sudo {
 
   print "\tDEBUG: get_root_by_sudo: getting root for '$hostname'\n" if $Rover::debug > 1;
   $exp_obj->clear_accum();
+
+ # First check to see if we are root or not
+ #
+  $exp_obj->send("id\n");
+  select(undef, undef, undef, 0.25);
+  
+  my $bail = 0; # Bail if we timeout running id
+  
+  $exp_obj->expect($Root_Access_Routines::command_timeout,
+	[ 'uid=0', sub { $got_root = 1; exp_continue; } ],
+	[ timeout => sub { $bail = 1; } ],
+	'-re', $Rover::user_prompt,
+  );
+  
+  if ( $bail ) {
+    print "$hostname:\tTimed out running id, server may be too busy\n" if $Rover::debug;
+    return(0);
+  }
+  if ( $got_root ) {
+    print "$hostname:\tDEBUG: get_root_by_su: already root, returning success\n" if $Rover::debug > 1;
+    return(1);
+  }
 
   $exp_obj->send("sudo -k\n");
   select(undef, undef, undef, 0.25);
