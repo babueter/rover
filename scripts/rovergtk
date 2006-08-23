@@ -1,0 +1,2659 @@
+#!/usr/bin/env perl
+#
+# Program: RoverGtk
+# Author:  Bryan Bueter
+#
+# Description: gui interface via Gtk-Perl for Rover.
+#
+
+use POSIX qw(:sys_wait_h _exit);
+use Config;
+
+use IPC::SysV qw(IPC_PRIVATE S_IRWXU);
+use IPC::Msg;
+
+use strict 'vars';
+use strict 'subs';
+use warnings;
+
+use Gtk;
+use Rover;
+use File::Copy;
+
+set_locale Gtk;
+init Gtk;
+
+my $false = 0;
+my $true = 1;
+
+our $rover_success_window_list = undef;
+our $rover_failure_window_list = undef;
+our $rover_progress_bar = undef;
+our %hosts_info = ();
+our $hosts_list = undef;
+
+BEGIN {
+  no warnings;
+
+  sub Rover::pinfo {
+    my ($hostname, $msg) = @_ ;
+
+    if ( $Rover::parent_id != $$ ) {
+      Rover::ipc_watcher_report($hostname, 255, $msg);
+
+      return(0);
+    }
+
+    if ( @{ $hosts_info{$hostname} } ) {
+      push( @{ $hosts_info{$hostname} }, $msg);
+    } else {
+      my @tmp_array = ($msg);
+      $hosts_info{$hostname} = \@tmp_array ;
+    }
+
+    if ( ! $rover_success_window_list ) {
+      print "$hostname:\t$msg\n";
+      return(0);
+    } else {
+      my $found = 0;
+      my @dlist = $rover_success_window_list->children();
+      foreach my $host_item ( @dlist ) {
+        if ( $host_item->child->get() eq $hostname ) {
+          $found = 1;
+
+          if ( $msg =~ m/[Ff]ailed/ || $msg =~ m/[Ee]rror/ ) {
+            $host_item->reparent( $rover_failure_window_list );
+          }
+          last;
+        }
+      }
+      if ( ! $found ) {
+        my @dlist = $rover_failure_window_list->children();
+        foreach my $host_item ( @dlist ) {
+          if ( $host_item->child->get() eq $hostname ) {
+            $found = 1;
+            last;
+          }
+        }
+        my $progress = $rover_progress_bar->get_value();
+        $progress++;
+        $rover_progress_bar->set_value($progress);
+      }
+
+      if ( ! $found ) {
+        my $host_item = new Gtk::ListItem( $hostname );
+        $rover_success_window_list->add( $host_item );
+        $host_item->show();
+
+        if ( $msg =~ m/[Ff]ailed/ || $msg =~ m/[Ee]rror/ ) {
+          $host_item->reparent( $rover_failure_window_list );
+        }
+        $host_item->signal_connect('select', sub {
+		my ($widget, $hostname) = @_ ;
+
+		$widget->deselect();
+
+		my $info_window = new Gtk::Window();
+		my $info_window_vbox = new Gtk::VBox($false, 0);
+		$info_window->add($info_window_vbox);
+		$info_window->set_title("$hostname");
+		$info_window_vbox->show();
+
+		my $info_swindow = new Gtk::ScrolledWindow( undef, undef );
+		$info_swindow->set_usize( 100, 125 );
+		$info_swindow->set_policy('automatic', 'automatic');
+		$info_window_vbox->pack_start($info_swindow, $true, $true, 0);
+		$info_swindow->show();
+
+		my $info_list = new Gtk::List();
+		$info_list->set_selection_mode('single');
+		$info_swindow->add_with_viewport( $info_list );
+		$info_list->show();
+
+		foreach my $line ( @{ $hosts_info{$hostname} } ) {
+		  my $info_line = new Gtk::ListItem( $line );
+		  $info_list->add( $info_line );
+		  $info_line->show();
+		}
+
+		my $info_bbox = new Gtk::HButtonBox();
+		$info_bbox->set_layout('spread');
+		$info_window_vbox->pack_start($info_bbox, $false, $false, 0);
+		$info_bbox->show();
+
+		my $info_log = new Gtk::Button("View Log");
+		my $info_close = new Gtk::Button("Close");
+		$info_bbox->add($info_log);
+		$info_bbox->add($info_close);
+		$info_log->show();
+		$info_close->show();
+
+		$info_close->signal_connect('clicked', sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+		$info_log->signal_connect('clicked', sub {
+			my ($widget, $hostname) = @_ ;
+
+			my $log_window = new Gtk::Window();
+			$log_window->set_usize(600, 500);
+			$log_window->set_policy($true, $true, $false);
+			$log_window->set_title("$hostname Log File");
+			$log_window->border_width( 0 );
+
+			my $log_vbox = new Gtk::VBox($false, 10);
+			$log_vbox->border_width( 10 );
+			$log_window->add($log_vbox);
+			$log_vbox->show();
+
+			my $log_table = new Gtk::Table( 2, 2, $false );
+			$log_table->set_row_spacing( 0, 2 );
+			$log_table->set_col_spacing( 0, 2 );
+			$log_vbox->pack_start($log_table, $true, $true, 0);
+			$log_table->show();
+
+			my $log_text = new Gtk::Text( undef, undef );
+			$log_text->set_editable( $false );
+			$log_table->attach($log_text, 0, 1, 0, 1,
+						[ 'expand', 'shrink', 'fill' ],
+						[ 'expand', 'shrink', 'fill' ],
+						0, 0 );
+			$log_text->show();
+
+			my $log_vscrollbar = new Gtk::VScrollbar( $log_text->vadj );
+			$log_table->attach($log_vscrollbar, 1, 2, 0, 1, 'fill', [ 'expand', 'shrink', 'fill' ], 0, 0);
+			$log_vscrollbar->show();
+
+			$log_text->realize();
+			$log_text->freeze();
+
+			open(LOG_FILE, "$Rover::logs_dir/$hostname.log");
+			foreach my $line (<LOG_FILE>) {
+			  $log_text->insert( undef, undef, undef, $line );
+			}
+			close(LOG_FILE);
+
+			my $log_bbox = new Gtk::HButtonBox();
+			$log_vbox->pack_start($log_bbox, $false, $false, 0);
+			$log_bbox->set_layout('spread');
+			$log_bbox->show();
+
+			my $log_close = new Gtk::Button("Close");
+			$log_bbox->add($log_close);
+			$log_close->show();
+
+			$log_close->signal_connect('clicked', sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+
+			$log_window->show();
+			$log_window->set_modal($true);
+			return(0);
+		}, $hostname);
+
+		$info_window->show();
+		$info_window->set_modal($true);
+
+        }, $hostname );
+
+      }
+
+    }
+    Gtk->main_iteration while ( Gtk->events_pending );
+  }
+
+  sub Rover::perror {
+    my $message = shift;
+
+    my $dialog = new Gtk::Dialog();
+    my $button = new Gtk::Button("Close");
+    $button->signal_connect("pressed", sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+    $dialog->action_area->pack_start( $button, $false, $false, 0 );
+    $button->show();
+
+    my $label = new Gtk::Label( $message );
+    $label->set_justify('left');
+    $label->set_line_wrap( $true );
+    $dialog->vbox->pack_start( $label, $true, $true, 5 );
+    $label->show();
+
+    $dialog->show();
+    $dialog->set_modal( $true );
+  }
+}
+
+local $SIG{HUP} = 'IGNORE';
+
+#######################################################################
+# Load rover configs
+#
+load_config();
+load_hosts();
+
+#######################################################################
+# Create main window and containers
+#
+my $window = new Gtk::Window("toplevel");
+$window->signal_connect("delete_event", sub { Gtk->exit(0); });
+$window->set_title("Rover GTK");
+
+my $main_box = new Gtk::VBox($false, 1);
+$main_box->border_width(1);
+$window->add($main_box);
+$main_box->show();
+
+#######################################################################
+# Creat main menu
+#
+my @main_menu_items = ( {path => '/_File',
+			 type => '<Branch>'},
+			{path => '/File/Run Rover',
+			 callback => \&run_rover },
+			{path => '/File/Set Password',
+			 callback => \&get_user_credentials },
+			{path => '/File/sep1',
+			 type => '<Separator>' },
+			{path => '/File/_Open',
+			 accelerator => '<control>O',
+			 callback => sub {
+				my $config_file = new Gtk::FileSelection( "Open Rover Config File" );
+				$config_file->ok_button->signal_connect('clicked', sub {
+					my $widget = shift;
+					my $config_filename = $widget->parent->parent->parent->get_filename();
+					$widget->parent->parent->parent->destroy();
+
+					clear_config();
+					my $old_config = $Rover::config_file;
+					$Rover::config_file = $config_filename;
+					eval { load_config(); };
+					if ( $@ ) {
+					  Rover::perror("Failed to Load '$config_filename':.\n\n$@\n");
+					} else {
+					  Rover::perror("Successfully Loaded '$config_filename'");
+					}
+					$Rover::config_file = $old_config;
+					return(0);
+				});
+				$config_file->cancel_button->signal_connect('clicked', sub {
+					my $widget = shift;
+					$widget->parent->parent->parent->destroy();
+					return(0);
+				});
+
+				$config_file->show();
+				$config_file->set_modal( $true );
+			 }},
+			{path => '/File/_Save',
+			 accelerator => '<control>S',
+			 callback => sub {
+				eval { save_config(); };
+				if ( $@ ) {
+				  Rover::perror("Error in saving config file:\n\n$@\n");
+				}
+				return(0);
+			}},
+			{path => '/File/Save _As',
+			 callback => sub {
+				my $config_file = new Gtk::FileSelection( "Config Save As" );
+				$config_file->ok_button->signal_connect('clicked', sub {
+					my $widget = shift;
+					my $config_filename = $widget->parent->parent->parent->get_filename();
+					$widget->parent->parent->parent->destroy();
+
+					my $old_config = $Rover::config_file;
+					$Rover::config_file = $config_filename;
+					eval { save_config(); };
+					if ( $@ ) {
+					  Rover::perror("Failed to save '$config_filename':.\n\n$@\n");
+					}
+					$Rover::config_file = $old_config;
+					return(0);
+				});
+				$config_file->cancel_button->signal_connect('clicked', sub {
+					my $widget = shift;
+					$widget->parent->parent->parent->destroy();
+					return(0);
+				});
+
+				$config_file->show();
+				$config_file->set_modal( $true );
+			}},
+			{path => '/File/sep2',
+			 type => '<Separator>' },
+			{path => '/File/_Quit',
+			 accelerator => '<control>Q',
+			 callback => sub { Gtk->exit( 0 ); } },
+			{path => '/_Config',
+			 type => '<Branch>' },
+			{path => '/Config/_Rulesets',
+			 callback => \&config_rulesets_window },
+			{path => '/Config/_Modules',
+			 callback => \&config_modules_window },
+			{path => '/Config/sep3',
+			 type => '<Separator>' },
+			{path => '/Config/_Rover',
+			 callback => sub { module_gtkconfig("Rover") } },
+			{path => '/_Help',
+			 type => '<LastBranch>' },
+			{path => '/Help/Contents',
+			 callback => sub { &help_module("rovergtk"); }},
+			{path => '/Help/About',
+			 callback => \&about_rover },);
+
+my $main_menu = create_menu_bar($window, @main_menu_items);
+$main_box->pack_start($main_menu, $false, $false, 0);
+$main_menu->show();
+
+my $main_hbox = new Gtk::HBox($false, 0);
+$main_box->pack_start($main_hbox, $false, $false, 0);
+$main_hbox->show();
+
+#######################################################################
+# Main ruleset selection window
+#
+my $main_ruleset_vbox = new Gtk::VBox($false, 0);
+$main_hbox->pack_start($main_ruleset_vbox, $false, $false, 0);
+$main_ruleset_vbox->show();
+
+my $main_ruleset_hbox1 = new Gtk::HBox($false, 0);
+$main_ruleset_vbox->pack_start($main_ruleset_hbox1, $false, $false, 0);
+$main_ruleset_hbox1->show();
+
+my $ruleset_frame = new Gtk::Frame("Ruleset");
+$main_ruleset_hbox1->pack_start($ruleset_frame, $true, $true, 0);
+$ruleset_frame->show();
+
+my $ruleset_frame_swindow = new Gtk::ScrolledWindow( undef, undef );
+$ruleset_frame_swindow->set_policy('automatic','automatic');
+$ruleset_frame_swindow->set_usize( 175, 150 );
+$ruleset_frame->add($ruleset_frame_swindow);
+$ruleset_frame_swindow->show();
+
+my $ruleset_frame_list = new Gtk::List();
+$ruleset_frame_list->set_selection_mode('single');
+$ruleset_frame_swindow->add_with_viewport($ruleset_frame_list);
+$ruleset_frame_list->show();
+
+my $ruleset_preview_frame = new Gtk::Frame("Ruleset Preview");
+$main_ruleset_hbox1->pack_start($ruleset_preview_frame, $true, $true, 0);
+$ruleset_preview_frame->show();
+
+my $ruleset_preview_frame_swindow = new Gtk::ScrolledWindow( undef, undef );
+$ruleset_preview_frame_swindow->set_policy('automatic','automatic');
+$ruleset_preview_frame_swindow->set_usize( 175, 150 );
+$ruleset_preview_frame->add($ruleset_preview_frame_swindow);
+$ruleset_preview_frame_swindow->show();
+
+my $ruleset_preview_frame_text = new Gtk::Text( undef, undef );
+$ruleset_preview_frame_text->set_editable( $false );
+$ruleset_preview_frame_text->set_word_wrap( $false );
+$ruleset_preview_frame_text->set_line_wrap( $false );
+$ruleset_preview_frame_swindow->add_with_viewport($ruleset_preview_frame_text);
+$ruleset_preview_frame_text->show();
+
+foreach my $ruleset ( keys %Rover::rulesets ) {
+  my $ruleset_item = new Gtk::ListItem( $ruleset );
+  $ruleset_frame_list->add( $ruleset_item );
+  $ruleset_item->show();
+
+  $ruleset_item->signal_connect('select', sub {
+	my ($widget, $ruleset_name, $ruleset_preview_frame_text) = @_ ;
+
+	my $ruleset_text = "";
+	foreach my $ruleset_command ( @{ $Rover::rulesets{$ruleset_name} } ) {
+	  $ruleset_text .= "$ruleset_command\n";
+	}
+
+	$ruleset_preview_frame_text->set_point( 0 );
+	$ruleset_preview_frame_text->forward_delete( $ruleset_preview_frame_text->get_length() );
+
+	$ruleset_preview_frame_text->insert( undef, $ruleset_preview_frame_text->style->black, undef, $ruleset_text );
+	$ruleset_preview_frame_text->set_point( 0 );
+
+	return(0);
+  }, $ruleset, $ruleset_preview_frame_text);
+}
+
+$main_box->signal_connect('expose_event', sub {
+	my ($widget, $ruleset_frame_list, $ruleset_preview_frame_text) = @_ ;
+
+	$ruleset_frame_list->clear_items(0, -1);
+	foreach my $ruleset ( keys %Rover::rulesets ) {
+	  my $ruleset_item = new Gtk::ListItem( $ruleset );
+	  $ruleset_frame_list->add( $ruleset_item );
+	  $ruleset_item->show();
+
+	  $ruleset_item->signal_connect('select', sub {
+		my ($widget, $ruleset_name, $ruleset_preview_frame_text) = @_ ;
+
+		my $ruleset_text = "";
+		foreach my $ruleset_command ( @{ $Rover::rulesets{$ruleset_name} } ) {
+		  $ruleset_text .= "$ruleset_command\n";
+		}
+
+		$ruleset_preview_frame_text->set_point( 0 );
+		$ruleset_preview_frame_text->forward_delete( $ruleset_preview_frame_text->get_length() );
+
+		$ruleset_preview_frame_text->insert( undef, $ruleset_preview_frame_text->style->black, undef, $ruleset_text );
+		$ruleset_preview_frame_text->set_point( 0 );
+
+		return(0);
+	  }, $ruleset, $ruleset_preview_frame_text );
+	}
+
+}, $ruleset_frame_list, $ruleset_preview_frame_text);
+
+#######################################################################
+# OS target selection buttons
+#
+my $os_type_frame = new Gtk::Frame("Target OS");
+$main_ruleset_vbox->pack_start($os_type_frame, $false, $false, 0);
+$os_type_frame->show();
+
+my %os_type_objects;
+
+my $num_rows = @Rover::OS_TYPES / 3 ;
+if ( $num_rows != int($num_rows) ) { $num_rows++; }
+
+my $os_type_table = new Gtk::Table( $num_rows, 3, $true );
+$os_type_frame->add( $os_type_table );
+
+my $column = 0;
+my $row = 0;
+foreach my $os_name ( @Rover::OS_TYPES ) {
+  if ( ! $column ) {
+    $row++ ;
+  }
+  my $os_cbutton = new Gtk::CheckButton($os_name);
+  $os_type_table->attach_defaults( $os_cbutton, $column, $column+1, $row-1, $row );
+  $os_cbutton->show();
+
+  $os_type_objects{$os_name} = $os_cbutton;
+  $column = ($column+1) % 3 ;
+
+}
+
+$os_type_table->show();
+
+my $main_ruleset_bbox = new Gtk::HButtonBox();
+$main_ruleset_vbox->pack_start($main_ruleset_bbox, $false, $false, 10);
+$main_ruleset_bbox->show();
+
+my $main_ruleset_add = new Gtk::Button("Add");
+my $main_ruleset_clear = new Gtk::Button("Clear");
+my $main_ruleset_remove = new Gtk::Button("Remove");
+$main_ruleset_bbox->add($main_ruleset_add);
+$main_ruleset_bbox->add($main_ruleset_clear);
+$main_ruleset_bbox->add($main_ruleset_remove);
+$main_ruleset_add->show();
+$main_ruleset_clear->show();
+$main_ruleset_remove->show();
+
+my $main_ruleset_clist = new_with_titles Gtk::CList( ("Target OS", "Ruleset(s)") );
+$main_ruleset_clist->set_selection_mode('single');
+$main_ruleset_clist->set_usize( 0, 175 );
+$main_ruleset_vbox->pack_start($main_ruleset_clist, $true, $true, 0);
+$main_ruleset_clist->show();
+
+foreach my $os_name ( @Rover::OS_TYPES ) {
+  my $os_tmp = "Rover::$os_name";
+  if ( @$os_tmp ) {
+    my $ruleset_names = "@$os_tmp";
+    my @tmp_list = ([ $os_name => $ruleset_names ]);
+    $main_ruleset_clist->append( @{ $tmp_list[0]} );
+  }
+}
+
+$main_ruleset_add->signal_connect('clicked', sub {
+	my ($widget, $main_ruleset_clist, $ruleset_frame_list, $os_type_objects) = @_ ;
+
+	my @dlist = $ruleset_frame_list->selection();
+	if ( ! @dlist ) { return(0); }
+
+	my $ruleset = $dlist[0]->child->get();
+
+	$main_ruleset_clist->clear();
+	foreach my $os_name ( @Rover::OS_TYPES ) {
+	  my $os_tmp = "Rover::$os_name";
+	  if ( $os_type_objects->{$os_name}->active() ) {
+	    push(@$os_tmp , $ruleset);
+	  }
+
+	  if ( @$os_tmp ) {
+	    my $ruleset_names = "@$os_tmp";
+	    my @tmp_list = ([ $os_name => $ruleset_names ]);
+	    $main_ruleset_clist->append( @{ $tmp_list[0]} );
+	  }
+	}
+
+	return(0);
+}, $main_ruleset_clist, $ruleset_frame_list, \%os_type_objects);
+
+$main_ruleset_clear->signal_connect('clicked', sub {
+	my ($widget, $main_ruleset_clist) = @_ ;
+
+	$main_ruleset_clist->clear();
+	foreach my $os_name ( @Rover::OS_TYPES ) {
+	  my $os_tmp = "Rover::$os_name";
+	  @$os_tmp = ();
+	}
+}, $main_ruleset_clist);
+
+$main_ruleset_remove->signal_connect('clicked', sub {
+	my ($widget, $main_ruleset_clist) = @_ ;
+
+	my @dlist = $main_ruleset_clist->selection();
+	if ( ! @dlist ) { return(0); }
+
+	my $os_name = $main_ruleset_clist->get_text($dlist[0], 0);
+	my $os_tmp = "Rover::$os_name";
+	@$os_tmp = ();
+
+	$main_ruleset_clist->remove($dlist[0]);
+
+	return(0);
+}, $main_ruleset_clist);
+
+#######################################################################
+# Main host list selection window
+#
+my $main_host_vbox = new Gtk::VBox($false, 0);
+$main_hbox->pack_start($main_host_vbox, $true, $true, 0);
+$main_host_vbox->show();
+
+my $host_frame = new Gtk::Frame("Hosts");
+$main_host_vbox->pack_start($host_frame, $true, $true, 0);
+$host_frame->show();
+
+my $host_frame_vbox = new Gtk::VBox($false, 0);
+$host_frame->add( $host_frame_vbox );
+$host_frame_vbox->show();
+
+my $host_frame_swindow = new Gtk::ScrolledWindow( undef, undef );
+$host_frame_swindow->set_policy('automatic', 'automatic');
+$host_frame_swindow->set_usize( 360, 250 );
+$host_frame_vbox->pack_start($host_frame_swindow, $true, $true, 0);
+$host_frame_swindow->show();
+
+my $number_of_fields = 1;
+if ( @Rover::hosts_list ) {
+  $number_of_fields = @{ $Rover::hosts_data{ $Rover::hosts_list[0] } } + 1 ;
+}
+my @column_names = ("Hostname");
+for (my $i=1; $i<$number_of_fields; $i++) {
+  push(@column_names, "Field $i");
+}
+
+$hosts_list = new_with_titles Gtk::CList( @column_names );
+
+for (my $i=0; $i<$number_of_fields; $i++) {
+  $hosts_list->set_column_width($i, 75);
+}
+
+$hosts_list->set_selection_mode('extended');
+$hosts_list->column_titles_active();
+$host_frame_swindow->add_with_viewport($hosts_list);
+$hosts_list->show();
+
+$hosts_list->signal_connect('click_column', sub{
+	my ($widget, $column) = @_ ;
+
+	$widget->set_sort_column($column);
+	$widget->sort();
+	return(0);
+});
+
+foreach my $host_name ( @Rover::hosts_list ) {
+  my @tmp_list = ([ $host_name => @{ $Rover::hosts_data{ $host_name } } ]);
+  $hosts_list->append( @{ $tmp_list[0] } );
+}
+$hosts_list->sort();
+
+my $host_bbox = new Gtk::HButtonBox();
+$host_bbox->set_layout('spread');
+$host_frame_vbox->pack_start($host_bbox, $false, $false, 0);
+$host_bbox->show();
+
+my $host_add = new Gtk::Button("Add");
+my $host_delete = new Gtk::Button("Delete");
+my $host_save = new Gtk::Button("Save");
+
+$host_bbox->add($host_add);
+$host_bbox->add($host_delete);
+$host_bbox->add($host_save);
+
+$host_add->show();
+$host_delete->show();
+$host_save->show();
+
+$host_add->signal_connect('clicked', sub {
+	# I'm not set on adding hosts this way, if you think of something
+	# better, e-mail me: bbueter@sourceforge.net
+	#
+	my $columns = $hosts_list->columns();
+
+	my $host_add_window = new Gtk::Window();
+	my $host_add_vbox = new Gtk::VBox($false, 0);
+	$host_add_window->add($host_add_vbox);
+	$host_add_vbox->show();
+
+	my $host_add_hbox1 = new Gtk::HBox($false, 0);
+	$host_add_vbox->pack_start($host_add_hbox1, $false, $false, 2);
+	$host_add_hbox1->show();
+
+	my $host_add_label = new Gtk::Label("Hostname");
+	$host_add_hbox1->pack_start($host_add_label, $false, $false, 2);
+	$host_add_label->show();
+
+	my $host_add_entry = new Gtk::Entry(100);
+	$host_add_hbox1->pack_start($host_add_entry, $true, $true, 2);
+	$host_add_entry->show();
+
+	my @field_entry_items = ();
+	for (my $i=1; $i<$columns; $i++) {
+	  my $host_add_field_hbox = new Gtk::HBox($false, 0);
+	  $host_add_vbox->pack_start($host_add_field_hbox, $false, $false, 2);
+	  $host_add_field_hbox->show();
+
+	  my $host_field_label = new Gtk::Label("Field $i");
+	  $host_add_field_hbox->pack_start($host_field_label, $false, $false, 2);
+	  $host_field_label->show();
+
+	  my $host_field_entry = new Gtk::Entry(100);
+	  $host_add_field_hbox->pack_start($host_field_entry, $true, $true, 2);
+	  $host_field_entry->show();
+
+	  $field_entry_items[$i] = $host_field_entry;
+	}
+
+	my $host_add_bbox = new Gtk::HButtonBox();
+	$host_add_vbox->pack_start($host_add_bbox, $false, $false, 2);
+	$host_add_bbox->set_layout('spread');
+	$host_add_bbox->show();
+
+	my $host_add_add = new Gtk::Button("Add");
+	my $host_add_done = new Gtk::Button("Done");
+	$host_add_bbox->add($host_add_add);
+	$host_add_bbox->add($host_add_done);
+	$host_add_add->show();
+	$host_add_done->show();
+
+	$host_add_done->signal_connect('clicked', sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+	$host_add_add->signal_connect('clicked', sub {
+		my ($widget, $host_add_entry, @field_entry_items) = @_ ;
+
+		my $columns = $hosts_list->columns();
+		my $host_name = $host_add_entry->get_text();
+		$host_add_entry->set_text("");
+
+		my @fields = ();
+		for (my $i=1; $i<$columns; $i++) {
+		  push(@fields, $field_entry_items[$i]->get_text());
+		  $field_entry_items[$i]->set_text("");
+		}
+
+		my @tmp_list = ([$host_name => @fields]);
+		$hosts_list->append( @{ $tmp_list[0] } );
+
+	}, $host_add_entry, @field_entry_items);
+
+	$host_add_window->show();
+	$host_add_window->set_modal($true);
+
+	return(0);
+});
+$host_delete->signal_connect('clicked', sub {
+	# We have to loop becuase selection returns a list of integers, and
+	# each time we delete a selected item, its row number changes.
+	#
+	my @selected_rows = $hosts_list->selection();
+	while ( @selected_rows ) {
+	  my $row = shift @selected_rows ;
+	  $hosts_list->remove( $row );
+
+	  @selected_rows = $hosts_list->selection();
+	}
+
+	return(0);
+});
+$host_save->signal_connect('clicked', sub {
+	my $rows = $hosts_list->rows();
+	if ( ! $rows ) { return(0); }
+	my $columns = $hosts_list->columns();
+
+	open(FOUT, "> $Rover::hosts_file") or Rover::perror("Could not open hosts file $Rover::hosts_file for writing");
+	for (my $i=0; $i<$rows; $i++) {
+	  my $host_text = "";
+	  for (my $j=0; $j<$columns; $j++) {
+	    $host_text .= $hosts_list->get_text($i,$j) .",";
+	  }
+	  chop $host_text;
+
+	  print FOUT "$host_text\n";
+	}
+	close(FOUT);
+
+});
+
+#######################################################################
+# Main Gtk, start loop
+#
+$window->show();
+
+main Gtk;
+exit(0);
+
+###############################
+######### Subroutines #########
+###############################
+
+sub not_written_yet {
+  my $dialog = new Gtk::Dialog();
+
+  my $button = new Gtk::Button("Close");
+  $button->signal_connect("clicked", sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+  $dialog->action_area->pack_start( $button, $false, $false, 0 );
+  $button->show();
+
+  my $label = new Gtk::Label("This function has not been written yet");
+  $dialog->vbox->pack_start( $label, $true, $true, 0 );
+  $label->show();
+
+  $dialog->show();
+  $dialog->set_modal( $true );
+
+  return(0);
+};
+
+sub config_rulesets_window {
+  my ( $widget ) = shift;
+
+  my $config_window = new Gtk::Window();
+  $config_window->set_usize( 700, 500 );
+
+ # I really hate to do this, but callback_action is seemingly broken in Gtk-Perl, so....
+ #
+  my $exit_sub = sub { my $config_window = shift; $config_window->destroy(); };
+  my @rulesets_menu_items = ( {path => '/_File',
+			 type => '<Branch>'},
+			{path => '/File/_Import',
+			 callback => \&not_written_yet },
+			{path => '/File/_Export',
+			 callback => \&not_written_yet },
+			{path => '/File/sep1',
+			 type => '<Separator>' },
+			{path => '/File/_Exit',
+			 callback => sub { &$exit_sub($config_window) },
+			});
+
+  my $config_window_main_box = new Gtk::VBox($false, 0);
+  $config_window->add($config_window_main_box);
+  $config_window_main_box->show();
+
+  my $rulesets_menu = create_menu_bar($config_window, @rulesets_menu_items);
+  $config_window_main_box->pack_start($rulesets_menu, $false, $false, 0);
+  $rulesets_menu->show();
+
+  my $config_window_name_box = new Gtk::HBox($false, 0);
+  $config_window_main_box->pack_start($config_window_name_box, $false, $false, 5);
+  $config_window_name_box->show();
+
+  my $ruleset_name_label = new Gtk::Label("Ruleset Name: ");
+  $config_window_name_box->pack_start($ruleset_name_label, $false, $false, 0);
+  $ruleset_name_label->show();
+  
+  my $ruleset_name_entry = new Gtk::Entry( 25 );
+  $config_window_name_box->pack_start($ruleset_name_entry, $false, $false, 0);
+  $ruleset_name_entry->show();
+
+ # Ruleset Definition Frame
+ #
+  my $ruleset_frame = new Gtk::Frame( "Ruleset Definition" );
+  $config_window_main_box->pack_start($ruleset_frame, $true, $true, 2);
+  $ruleset_frame->show();
+
+  my $ruleset_frame_hbox = new Gtk::HBox($false, 0);
+  $ruleset_frame->add($ruleset_frame_hbox);
+  $ruleset_frame_hbox->show();
+
+  my $ruleset_exported_commands_box = new Gtk::VBox($false, 0);
+  $ruleset_frame_hbox->pack_start($ruleset_exported_commands_box, $false, $false, 0);
+  $ruleset_exported_commands_box->show();
+
+  my $ruleset_exported_commands_window = new Gtk::ScrolledWindow( undef, undef );
+  $ruleset_exported_commands_window->set_policy('automatic','automatic');
+  $ruleset_exported_commands_window->set_usize( 175, 150 );
+  $ruleset_exported_commands_box->pack_start($ruleset_exported_commands_window, $true, $true, 0);
+  $ruleset_exported_commands_window->show();
+
+  my $ruleset_exported_commands_tree = new Gtk::Tree();
+  $ruleset_exported_commands_window->add_with_viewport( $ruleset_exported_commands_tree );
+  $ruleset_exported_commands_tree->show();
+
+  my $ruleset_current_selection = "";
+  foreach my $module_name (keys %Rover::registered_modules) {
+    if ( ! @{ $Rover::registered_modules{$module_name} } ) { next; }
+
+    my $module_tree_item = new_with_label Gtk::TreeItem( $module_name );
+    $ruleset_exported_commands_tree->append( $module_tree_item );
+    $module_tree_item->show();
+
+    $module_tree_item->signal_connect('select', sub {
+		my ($widget, $module_name) = @_ ;
+
+		help_module($module_name);
+		return(0);
+    }, $module_name);
+
+    my $module_subtree = new Gtk::Tree();
+    $module_tree_item->set_subtree( $module_subtree );
+    $module_subtree->show();
+
+    foreach my $exported_command ( @{ $Rover::registered_modules{$module_name} } ) {
+      my $command_tree_item = new_with_label Gtk::TreeItem( $exported_command );
+      $module_subtree->append( $command_tree_item );
+      $command_tree_item->show();
+
+      $command_tree_item->signal_connect('select', sub {
+		my ($widget, $exported_command) = @_;
+
+		$ruleset_current_selection = $exported_command ;
+		return(0);
+      }, $exported_command);
+    }
+  }
+
+  my $ruleset_button_vbox = new Gtk::VButtonBox();
+  $ruleset_button_vbox->set_spacing_default( 20 );
+  $ruleset_button_vbox->set_layout_default('spread');
+  $ruleset_frame_hbox->pack_start($ruleset_button_vbox, $false, $false, 0);
+  $ruleset_button_vbox->show();
+
+  my $ruleset_button_append = new Gtk::Button("Append");
+  my $ruleset_button_clear = new Gtk::Button("Clear");
+
+  $ruleset_button_vbox->add( $ruleset_button_append );
+  $ruleset_button_vbox->add( $ruleset_button_clear );
+  $ruleset_button_append->show();
+  $ruleset_button_clear->show();
+
+  my $ruleset_definition_table = new Gtk::Table( 2, 2, $false );
+  $ruleset_definition_table->set_row_spacing( 0, 2 );
+  $ruleset_definition_table->set_col_spacing( 0, 2 );
+  $ruleset_frame_hbox->pack_start($ruleset_definition_table, $true, $true, 0);
+  $ruleset_definition_table->show();
+
+  my $ruleset_definition_text = new Gtk::Editable("Gtk::Text");
+  $ruleset_definition_text->set_editable( $true );
+  $ruleset_definition_table->attach( $ruleset_definition_text, 0, 1, 0, 1,
+	[ 'expand', 'shrink', 'fill' ],
+	[ 'expand', 'shrink', 'fill' ], 0, 0 );
+  $ruleset_definition_text->show();
+
+  my $vscrollbar = new Gtk::VScrollbar( $ruleset_definition_text->vadj );
+  $ruleset_definition_table->attach( $vscrollbar, 1, 2, 0, 1, 'fill',
+	[ 'expand', 'shrink', 'fill' ], 0, 0 );
+  $vscrollbar->show();
+
+  $ruleset_button_append->signal_connect('clicked', sub {
+		my ($widget, $ruleset_definition_text) = @_ ;
+
+		if ( ! $ruleset_current_selection ) { return(0); }
+
+		my $parameter_window = new Gtk::Window();
+		my $parameter_box = new Gtk::VBox($false, $false);
+		$parameter_window->add($parameter_box);
+		$parameter_box->show();
+
+		my $parameter_label = new Gtk::Label("Enter Parameter for: $ruleset_current_selection()");
+		$parameter_label->set_justify('left');
+		$parameter_box->pack_start($parameter_label, $false, $false, 0);
+		$parameter_label->show();
+
+		my $separator1 = new Gtk::HSeparator();
+		$parameter_box->pack_start($separator1, $false, $false, 0);
+		$separator1->show();
+
+		my $parameter_entry = new Gtk::Entry(250);
+		$parameter_box->pack_start($parameter_entry, $true, $true, 2);
+		$parameter_entry->show();
+
+		my $separator2 = new Gtk::HSeparator();
+		$parameter_box->pack_start($separator2, $false, $false, 0);
+		$separator2->show();
+
+		my $parameter_hbox1 = new Gtk::HButtonBox();
+		$parameter_box->pack_start($parameter_hbox1, $false, $false, 2);
+		$parameter_hbox1->set_layout('spread');
+		$parameter_hbox1->show();
+
+		my $parameter_ok = new Gtk::Button("Ok");
+		my $parameter_cancel = new Gtk::Button("Cancel");
+		$parameter_hbox1->add($parameter_ok);
+		$parameter_hbox1->add($parameter_cancel);
+		$parameter_ok->show();
+		$parameter_cancel->show();
+
+		$parameter_ok->signal_connect('clicked', sub {
+			my ($widget, $ruleset_definition_text, $parameter_entry) = @_;
+
+			my $prefix = "";
+			if ( $ruleset_definition_text->get_length() ) { $prefix = "\n"; }
+			$ruleset_definition_text->insert_text($prefix . $ruleset_current_selection ."(". $parameter_entry->get_text() .");",
+				$ruleset_definition_text->get_length());
+
+			$widget->parent->parent->parent->destroy();
+			return(0);
+		}, $ruleset_definition_text, $parameter_entry);
+
+		$parameter_cancel->signal_connect('clicked', sub {my $widget = shift; $widget->parent->parent->parent->destroy(); });
+
+		$parameter_window->show();
+		$parameter_window->set_modal( $true );
+
+		return(0);
+
+  }, $ruleset_definition_text);
+
+  $ruleset_button_clear->signal_connect('clicked', sub {
+		my ($widget, $ruleset_definition_text) = @_ ;
+
+		$ruleset_definition_text->delete_text(0, $ruleset_definition_text->get_length());
+		return(0);
+
+  }, $ruleset_definition_text);
+
+ # Ruleset command buttons
+ #
+  my $ruleset_bbox1 = new Gtk::HButtonBox();
+  $ruleset_bbox1->set_layout_default('spread');
+  $config_window_main_box->pack_start($ruleset_bbox1, $false, $false, 0);
+  $ruleset_bbox1->show();
+
+  my $ruleset_load = new Gtk::Button("Load");
+  my $ruleset_save = new Gtk::Button("Save");
+  my $ruleset_delete = new Gtk::Button("Delete");
+  my $ruleset_new = new Gtk::Button("New");
+
+  $ruleset_bbox1->add($ruleset_load);
+  $ruleset_bbox1->add($ruleset_save);
+  $ruleset_bbox1->add($ruleset_delete);
+  $ruleset_bbox1->add($ruleset_new);
+  $ruleset_load->show();
+  $ruleset_save->show();
+  $ruleset_delete->show();
+  $ruleset_new->show();
+
+  $ruleset_delete->signal_connect('clicked', sub {
+		my $widget = shift;
+
+		my $ruleset_delete_window = new Gtk::Window();
+		my $ruleset_delete_box = new Gtk::VBox($false, $false);
+		$ruleset_delete_window->add($ruleset_delete_box);
+		$ruleset_delete_box->show();
+
+		my $ruleset_delete_label = new Gtk::Label("Select Ruleset To Delete");
+		$ruleset_delete_box->pack_start($ruleset_delete_label, $false, $false, 5);
+		$ruleset_delete_label->show();
+
+		my $ruleset_delete_swindow = new Gtk::ScrolledWindow( undef, undef );
+		$ruleset_delete_swindow->set_usize( 0, 100 );
+		$ruleset_delete_swindow->set_policy('automatic', 'automatic');
+		$ruleset_delete_box->pack_start($ruleset_delete_swindow, $true, $true, 0);
+		$ruleset_delete_swindow->show();
+
+		my $ruleset_delete_list = new Gtk::List();
+		$ruleset_delete_list->set_selection_mode('single');
+		$ruleset_delete_swindow->add_with_viewport( $ruleset_delete_list );
+		$ruleset_delete_list->show();
+
+		foreach my $ruleset ( keys %Rover::rulesets ) {
+		  my $ruleset_item = new Gtk::ListItem( $ruleset );
+		  $ruleset_delete_list->add( $ruleset_item );
+		  $ruleset_item->show();
+		}
+
+		my $ruleset_delete_bbox1 = new Gtk::HButtonBox();
+		$ruleset_delete_bbox1->set_layout('spread');
+		$ruleset_delete_bbox1->set_spacing(10);
+		$ruleset_delete_box->pack_start($ruleset_delete_bbox1, $false, $false, 5);
+		$ruleset_delete_bbox1->show();
+
+		my $ruleset_delete_ok = new Gtk::Button("Ok");
+		my $ruleset_delete_cancel = new Gtk::Button("Cancel");
+		$ruleset_delete_bbox1->add($ruleset_delete_ok);
+		$ruleset_delete_bbox1->add($ruleset_delete_cancel);
+		$ruleset_delete_ok->show();
+		$ruleset_delete_cancel->show();
+
+		$ruleset_delete_ok->signal_connect('clicked', sub {
+			my $widget = shift;
+			my $ruleset_delete_list = shift;
+
+			my @dlist = $ruleset_delete_list->selection;
+			if ( ! @dlist ) { return(0); }
+
+			my $ruleset_name = $dlist[0]->child->get();
+			delete $Rover::rulesets{ $ruleset_name };
+
+			$widget->parent->parent->parent->destroy();
+			return(0);
+		}, $ruleset_delete_list);
+
+		$ruleset_delete_cancel->signal_connect('clicked', sub {
+			my $widget = shift;
+			$widget->parent->parent->parent->destroy();
+			return(0);
+		});
+
+		$ruleset_delete_window->show();
+		$ruleset_delete_window->set_modal( $true );
+  });
+
+  $ruleset_load->signal_connect('clicked', sub {
+		my $widget = shift;
+		my ($ruleset_name_entry, $ruleset_definition_text) = @_ ;
+
+		my $ruleset_load_window = new Gtk::Window();
+		my $ruleset_load_box = new Gtk::VBox($false, $false);
+		$ruleset_load_window->add($ruleset_load_box);
+		$ruleset_load_box->show();
+
+		my $ruleset_load_label = new Gtk::Label("Select Ruleset To Load");
+		$ruleset_load_box->pack_start($ruleset_load_label, $false, $false, 5);
+		$ruleset_load_label->show();
+
+		my $ruleset_load_swindow = new Gtk::ScrolledWindow( undef, undef );
+		$ruleset_load_swindow->set_usize( 0, 100 );
+		$ruleset_load_swindow->set_policy('automatic', 'automatic');
+		$ruleset_load_box->pack_start($ruleset_load_swindow, $true, $true, 0);
+		$ruleset_load_swindow->show();
+
+		my $ruleset_load_list = new Gtk::List();
+		$ruleset_load_list->set_selection_mode('single');
+		$ruleset_load_swindow->add_with_viewport( $ruleset_load_list );
+		$ruleset_load_list->show();
+
+		foreach my $ruleset ( keys %Rover::rulesets ) {
+		  my $ruleset_item = new Gtk::ListItem( $ruleset );
+		  $ruleset_load_list->add( $ruleset_item );
+		  $ruleset_item->show();
+		}
+
+		my $ruleset_load_bbox1 = new Gtk::HButtonBox();
+		$ruleset_load_bbox1->set_layout('spread');
+		$ruleset_load_bbox1->set_spacing(10);
+		$ruleset_load_box->pack_start($ruleset_load_bbox1, $false, $false, 5);
+		$ruleset_load_bbox1->show();
+
+		my $ruleset_load_ok = new Gtk::Button("Ok");
+		my $ruleset_load_cancel = new Gtk::Button("Cancel");
+		$ruleset_load_bbox1->add($ruleset_load_ok);
+		$ruleset_load_bbox1->add($ruleset_load_cancel);
+		$ruleset_load_ok->show();
+		$ruleset_load_cancel->show();
+
+		$ruleset_load_ok->signal_connect('clicked', sub {
+			my $widget = shift;
+			my ($ruleset_load_list, $ruleset_name_entry, $ruleset_definition_list) = @_ ;
+
+			my @dlist = $ruleset_load_list->selection;
+			if ( ! @dlist ) { return(0); }
+
+			my $ruleset_name = $dlist[0]->child->get();
+			$ruleset_name_entry->set_text("$ruleset_name");
+
+			$ruleset_definition_text->delete_text(0, $ruleset_definition_text->get_length());
+			foreach my $ruleset_line ( @{ $Rover::rulesets{ $ruleset_name } } ) {
+				$ruleset_definition_text->insert_text($ruleset_line ."\n", $ruleset_definition_text->get_length());
+			}
+
+
+			$widget->parent->parent->parent->destroy();
+			return(0);
+		}, $ruleset_load_list, $ruleset_name_entry, $ruleset_definition_text);
+
+		$ruleset_load_cancel->signal_connect('clicked', sub {
+			my $widget = shift;
+			$widget->parent->parent->parent->destroy();
+			return(0);
+		});
+
+		$ruleset_load_window->show();
+		$ruleset_load_window->set_modal( $true );
+
+  }, $ruleset_name_entry, $ruleset_definition_text);
+
+  $ruleset_save->signal_connect('clicked', sub {
+		my $widget = shift;
+		my ($ruleset_name_entry, $ruleset_definition_text) = @_ ;
+
+		my $ruleset_text = $ruleset_definition_text->get_chars(0, $ruleset_definition_text->get_length());
+		my @ruleset_commands = split(/\n/, $ruleset_text);
+
+		my $ruleset_name = $ruleset_name_entry->get_text();
+		Rover::perror("Ruleset $ruleset_name Saved");
+		$Rover::rulesets{ $ruleset_name } = \@ruleset_commands ;
+
+		return(0);
+  }, $ruleset_name_entry, $ruleset_definition_text);
+
+  $ruleset_new->signal_connect('clicked', sub { 
+		my $widget = shift;
+		my ($ruleset_name_entry, $ruleset_definition_text) = @_ ;
+
+		$ruleset_name_entry->set_text("");
+		$ruleset_definition_text->set_point( 0 );
+		$ruleset_definition_text->forward_delete( $ruleset_definition_text->get_length() );
+
+		return(0);
+  }, $ruleset_name_entry, $ruleset_definition_text);
+
+  $config_window->show();
+
+  return(0);
+}
+
+sub config_modules_window {
+# This window provides a means to call a module's gtkconfig function.
+# If the module does not provide a gtkconfig function, or launching it
+# fails, we create our own config window based on registerd vars of that
+# module.  We can also load and unload Rover modules here.
+#
+  my ( $widget ) = shift;
+
+  my $config_modules_window = new Gtk::Window();
+
+ # Build selection window for modules to configure
+ #
+  my $config_modules_main_box = new Gtk::VBox($false, $false);
+  $config_modules_window->add( $config_modules_main_box );
+  $config_modules_main_box->show();
+
+  my $config_modules_label = new Gtk::Label("Select Module To Configure");
+  $config_modules_main_box->pack_start($config_modules_label, $false, $false, 5);
+  $config_modules_label->show();
+
+  my $config_modules_swindow = new Gtk::ScrolledWindow( undef, undef );
+  $config_modules_swindow->set_usize( 200, 175 );
+  $config_modules_swindow->set_policy('automatic', 'automatic');
+  $config_modules_main_box->pack_start($config_modules_swindow, $true, $true, 0);
+  $config_modules_swindow->show();
+
+  my $config_modules_list = new Gtk::List();
+  $config_modules_list->set_selection_mode('single');
+  $config_modules_swindow->add_with_viewport( $config_modules_list );
+  $config_modules_list->show();
+
+  my $config_modules_bbox1 = new Gtk::HButtonBox();
+  $config_modules_bbox1->set_layout('spread');
+  $config_modules_bbox1->set_spacing(10);
+  $config_modules_main_box->pack_start($config_modules_bbox1, $false, $false, 5);
+  $config_modules_bbox1->show();
+
+  my $config_modules_ok = new Gtk::Button("Ok");
+  my $config_modules_cancel = new Gtk::Button("Cancel");
+  $config_modules_bbox1->add( $config_modules_ok );
+  $config_modules_bbox1->add( $config_modules_cancel );
+  $config_modules_ok->show();
+  $config_modules_cancel->show();
+
+  my $separator = new Gtk::HSeparator();
+  $config_modules_main_box->pack_start($separator, $false, $false, 5);
+  $separator->show();
+
+  my $config_modules_bbox2 = new Gtk::HButtonBox();
+  $config_modules_bbox2->set_layout('spread');
+  $config_modules_bbox2->set_spacing(10);
+  $config_modules_main_box->pack_start($config_modules_bbox2, $false, $false, 5);
+  $config_modules_bbox2->show();
+
+  my $config_modules_new = new Gtk::Button("New");
+  my $config_modules_delete = new Gtk::Button("Delete");
+  $config_modules_bbox2->add( $config_modules_new );
+  $config_modules_bbox2->add( $config_modules_delete );
+  $config_modules_new->show();
+  $config_modules_delete->show();
+
+  $config_modules_cancel->signal_connect('clicked', sub {
+	my $widget = shift;
+	$widget->parent->parent->parent->destroy();
+  });
+
+  $config_modules_new->signal_connect('clicked', sub {
+	my $widget = shift;
+	$widget->parent->parent->parent->destroy();
+
+	my $add_module_file = new Gtk::FileSelection( "Add Rover Module File" );
+	$add_module_file->ok_button->signal_connect('clicked', sub {
+		my $widget = shift;
+		my $module_filename = $widget->parent->parent->parent->get_filename();
+
+		$widget->parent->parent->parent->destroy();
+		if ( ! stat($module_filename) ) { return(0); }
+
+		my $file_name = (split('/', $module_filename))[-1];
+		copy($module_filename,"$ENV{HOME}/.rover/contrib");
+
+		if ( ! -f "$ENV{HOME}/.rover/contrib/$file_name" ) {
+		  Rover::perror("Could not copy $module_filename to ~/.rover/contrib");
+		  return(0);
+		}
+
+		open(FIN, "$ENV{HOME}/.rover/contrib/$file_name");
+		my @package = grep(/^[\s\t]*package[\s\t]+(\w+)[\s\t]*;/, <FIN>);
+		if ( ! @package ) {
+		  Rover::perror("File $module_filename is not a package");
+		  return(0);
+		}
+
+		$package[0] =~ m/^[\s\t]*package[\s\t]+(\w+)[\s\t]*;/ ;
+		my $module_name = $1 ;
+		close(FIN);
+
+		eval { Rover::load_module("$ENV{HOME}/.rover/contrib/$file_name", $module_name); };
+		if ( $@ ) {
+		  Rover::perror("Could not load module file '$module_name', error was:\n\n'$@'\n");
+		} else {
+		  Rover::perror("Successfully loaded module file '$module_filename'");
+		}
+		return(0);
+	});
+	$add_module_file->cancel_button->signal_connect('clicked', sub {
+		my $widget = shift;
+		$widget->parent->parent->parent->destroy();
+	});
+
+	$add_module_file->show();
+	$add_module_file->set_modal( $true );
+	return(0);
+  });
+
+  $config_modules_delete->signal_connect('clicked', sub {
+	my ($widget, $config_modules_list) = @_;
+	my @dlist = $config_modules_list->selection;
+	my $module_listitem = $dlist[0];
+
+	if ( ! $module_listitem ) { return (0) };
+
+	my $module = $module_listitem->child->get();
+	$widget->parent->parent->parent->destroy();
+	eval { Rover::unregister_module( $module ) };
+	if ( $@ ) {
+	  Rover::perror("Error unregistering module:\n\n$@\n");
+	  return(1);
+	}
+
+	Rover::perror("Unregistered module '$module' successfully");
+	return(0);
+
+  }, $config_modules_list);
+
+  $config_modules_ok->signal_connect('clicked', sub {
+	my ($widget, $config_modules_list) = @_;
+	my @dlist = $config_modules_list->selection;
+	my $module_listitem = $dlist[0];
+
+	if ( ! $module_listitem ) { return (0) };
+
+	$widget->parent->parent->parent->destroy();
+
+	my $module = $module_listitem->child->get();
+	my $module_config = $module ."::gtkconfig";
+	eval { &$module_config(); };
+	if ( $@ ) {
+	  module_gtkconfig($module);
+	}
+
+  }, $config_modules_list);
+
+  foreach my $module ( keys %Rover::registered_modules ) {
+    my $module_item = new Gtk::ListItem( $module );
+    $config_modules_list->add($module_item);
+    $module_item->show();
+  }
+
+  $config_modules_window->show();
+  $config_modules_window->set_modal( $true );
+
+  return(0);
+}
+
+sub gtkconfig_array {
+  my ($array) = shift;
+
+  my $array_name = $array;
+  $array_name =~ s/^.// ;
+
+  my $window = new Gtk::Window();
+  $window->set_title("Modify Array");
+
+  my $vbox = new Gtk::VBox($false, 0);
+  $window->add($vbox);
+  $vbox->show();
+
+  my $label = new Gtk::Label("$array");
+  $vbox->pack_start($label, $false, $false, 5);
+  $label->show();
+
+  my $hbox1 = new Gtk::HBox($false, 0);
+  $vbox->pack_start($hbox1, $false, $false, 0);
+  $hbox1->show();
+
+  my $scalar_entry = new Gtk::Entry(100);
+  $hbox1->pack_start($scalar_entry, $true, $true, 2);
+  $scalar_entry->show();
+
+  my $scalar_add = new Gtk::Button("Add");
+  $hbox1->pack_start($scalar_add, $false, $false, 2);
+  $scalar_add->show();
+
+  my $values_swindow = new Gtk::ScrolledWindow( undef, undef );
+  $values_swindow->set_usize( 100, 100 );
+  $values_swindow->set_policy('automatic', 'automatic');
+  $vbox->pack_start($values_swindow, $true, $true, 0);
+  $values_swindow->show();
+
+  my $values_list = new Gtk::List();
+  $values_list->set_selection_mode('extended');
+  $values_swindow->add_with_viewport( $values_list );
+  $values_list->show();
+
+  foreach ( @$array_name ) {
+    my $new_item = new Gtk::ListItem($_);
+    $values_list->add($new_item);
+    $new_item->show();
+  }
+
+  my $bbox1 = new Gtk::HButtonBox();
+  $bbox1->set_layout('spread');
+  $bbox1->set_spacing_default(2);
+  $vbox->pack_start($bbox1, $false, $false, 2);
+  $bbox1->show();
+
+  my $separator = new Gtk::HSeparator();
+  $vbox->pack_start($separator, $false, $false, 2);
+  $separator->show();
+
+  my $array_clear = new Gtk::Button("Clear");
+  my $array_delete = new Gtk::Button("Delete");
+
+  $bbox1->add($array_clear);
+  $bbox1->add($array_delete);
+
+  $array_clear->show();
+  $array_delete->show();
+
+  my $bbox2 = new Gtk::HButtonBox();
+  $bbox2->set_layout('spread');
+  $bbox2->set_spacing_default(2);
+  $vbox->pack_start($bbox2, $false, $false, 2);
+  $bbox2->show();
+
+  my $array_ok = new Gtk::Button("Ok");
+  my $array_cancel = new Gtk::Button("Cancel");
+  $bbox2->add($array_ok);
+  $bbox2->add($array_cancel);
+  $array_ok->show();
+  $array_cancel->show();
+
+  $scalar_add->signal_connect('clicked', sub {
+	my ($widget, $scalar_entry, $values_list) = @_ ;
+
+	my $scalar = $scalar_entry->get_text();
+	if ( ! $scalar ) { return(0); }
+
+	my $new_scalar = new Gtk::ListItem($scalar);
+	$values_list->add( $new_scalar );
+	$new_scalar->show();
+
+	return(0);
+  }, $scalar_entry, $values_list);
+
+  $array_cancel->signal_connect('clicked', sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+
+  $array_delete->signal_connect('clicked', sub {
+	my ($widget, $values_list) = @_ ;
+
+	my @dlist = $values_list->selection();
+	foreach my $item (@dlist) {
+	  $values_list->remove_items( $item );
+	}
+
+	return(0);
+  }, $values_list);
+
+  $array_clear->signal_connect('clicked', sub {
+	my ($widget, $values_list) = @_ ;
+
+	$values_list->clear_items(0, -1);
+	return(0);
+  }, $values_list);
+
+  $array_ok->signal_connect('clicked', sub {
+	my ($widget, $array_name, $values_list) = @_ ;
+
+	my @scalar_items = $values_list->children();
+
+	@$array_name = ();
+	foreach (@scalar_items) {
+	  my $scalar = $_->child->get();
+	  push(@$array_name, $scalar);
+	}
+
+	$widget->parent->parent->parent->destroy();
+	return(0);
+  }, $array_name, $values_list);
+
+  $window->show();
+  $window->set_modal( $true );
+}
+
+sub module_gtkconfig {
+  my $module = shift;
+
+ # I dont want to register Rover as a module, so we check for it
+ #
+  if ( $module ne "Rover" ) {
+    if ( ! @{ $Rover::registered_vars{$module} } ) {
+      Rover::perror("Module $module has no registered vars, nothing to configure");
+      return(1);
+    }
+  }
+
+  my $window = new Gtk::Window();
+
+  my $main_box = new Gtk::VBox($false, 0);
+  $window->add($main_box);
+  $main_box->show();
+
+  my @menu_items = (	{path => '/_Help',
+			 type => '<LastBranch>'},
+			{path => '/Help/Contents',
+			 callback => sub { &help_module($module); }});
+
+  my $main_menu = create_menu_bar($window, @menu_items);
+  $main_box->pack_start($main_menu, $false, $false, 0);
+  $main_menu->show();
+
+  my $config_label = new Gtk::Label("$module GTK Config");
+  $main_box->pack_start($config_label, $true, $true, 2);
+  $config_label->show();
+
+  my $separator = new Gtk::HSeparator();
+  $main_box->pack_start($separator, $true, $false, 5);
+  $separator->show();
+
+  my %entry_items;
+  if ( $module eq "Rover" ) {
+    foreach my $module_var ( @Rover::config_vars ) {
+      my $module_var_name = $module_var;
+      $module_var_name =~ s/^.// ;
+  
+      if ( $module_var =~ m/^%/ ) {
+       # Configure hashes separately.  Not sure we ever really want to 
+       # configure hashes, but if you think of something good, here is
+       # where you should put it.
+       #
+        my $hbox = new Gtk::HBox($false, 0);
+        my $var_label = new Gtk::Label( $module_var );
+        my $var_button = new Gtk::Button("Configure Hash");
+        $var_label->set_justify('left');
+  
+        $main_box->pack_start($hbox, $false, $false, 4);
+        $hbox->show();
+        $hbox->pack_start($var_label, $true, $true, 2);
+        $hbox->pack_start($var_button, $false, $false, 2);
+        $var_label->show();
+        $var_button->show();
+  
+        $var_button->signal_connect('clicked', \&not_written_yet);
+  
+        next;
+      }
+  
+      if ( $module_var =~ m/^@/ ) {
+       # Configure array vars here.
+       #
+        my $hbox = new Gtk::HBox($false, 0);
+        my $var_label = new Gtk::Label( $module_var );
+        my $var_button = new Gtk::Button("Configure Array");
+        $var_label->set_justify('left');
+  
+        $main_box->pack_start($hbox, $false, $false, 4);
+        $hbox->show();
+        $hbox->pack_start($var_label, $true, $true, 2);
+        $hbox->pack_start($var_button, $false, $false, 2);
+        $var_label->show();
+        $var_button->show();
+  
+        $var_button->signal_connect('clicked', sub{ &gtkconfig_array($module_var); } );
+  
+        next;
+      }
+
+      my $hbox = new Gtk::HBox($false, 0);
+      my $var_label = new Gtk::Label( $module_var );
+      my $text_entry = new Gtk::Entry( 100 );
+  
+      $entry_items{$module_var_name} = $text_entry;
+      $text_entry->set_text($$module_var_name);
+  
+      $main_box->pack_start($hbox, $false, $false, 4);
+      $hbox->show();
+  
+      $hbox->pack_start($var_label, $false, $false, 2);
+      $hbox->pack_start($text_entry, $true, $true, 2);
+      $var_label->show();
+      $text_entry->show();
+    }
+  }
+
+  foreach my $module_var ( @{ $Rover::registered_vars{ $module } } ) {
+
+    my $module_var_name = $module_var;
+    $module_var_name =~ s/^.// ;
+
+    if ( $module_var =~ m/^%/ ) {
+     # Configure hashes separately.  Not sure we ever really want to 
+     # configure hashes, but if you think of something good, here is
+     # where you should put it.
+     #
+      my $hbox = new Gtk::HBox($false, 0);
+      my $var_label = new Gtk::Label( $module_var );
+      my $var_button = new Gtk::Button("Configure Hash");
+      $var_label->set_justify('left');
+
+      $main_box->pack_start($hbox, $false, $false, 4);
+      $hbox->show();
+      $hbox->pack_start($var_label, $true, $true, 2);
+      $hbox->pack_start($var_button, $false, $false, 2);
+      $var_label->show();
+      $var_button->show();
+
+      $var_button->signal_connect('clicked', \&not_written_yet);
+
+      next;
+    }
+
+    if ( $module_var =~ m/^@/ ) {
+     # Configure array vars here.
+     #
+      my $hbox = new Gtk::HBox($false, 0);
+      my $var_label = new Gtk::Label( $module_var );
+      my $var_button = new Gtk::Button("Configure Array");
+      $var_label->set_justify('left');
+
+      $main_box->pack_start($hbox, $false, $false, 4);
+      $hbox->show();
+      $hbox->pack_start($var_label, $true, $true, 2);
+      $hbox->pack_start($var_button, $false, $false, 2);
+      $var_label->show();
+      $var_button->show();
+
+      $var_button->signal_connect('clicked', sub { &gtkconfig_array($module_var); });
+
+      next;
+    }
+
+    if ( ! $module_var =~ m/^\$/ ) { next; }	# Only interested in scalar vars
+
+    my $hbox = new Gtk::HBox($false, 0);
+    my $var_label = new Gtk::Label( $module_var );
+    my $text_entry = new Gtk::Entry( 100 );
+
+    $entry_items{$module_var_name} = $text_entry;
+    $text_entry->set_text($$module_var_name);
+
+    $main_box->pack_start($hbox, $false, $false, 4);
+    $hbox->show();
+
+    $hbox->pack_start($var_label, $false, $false, 2);
+    $hbox->pack_start($text_entry, $true, $true, 2);
+    $var_label->show();
+    $text_entry->show();
+  }
+
+  $separator = new Gtk::HSeparator();
+  $main_box->pack_start($separator, $true, $false, 5);
+  $separator->show();
+
+  my $config_bbox = new Gtk::HButtonBox();
+  $config_bbox->set_layout('end');
+  $config_bbox->set_spacing(1);
+  $main_box->pack_start($config_bbox, $false, $false, 5);
+  $config_bbox->show();
+
+  my $config_ok = new Gtk::Button("Ok");
+  my $config_cancel = new Gtk::Button("Cancel");
+  $config_bbox->add( $config_ok );
+  $config_bbox->add( $config_cancel );
+  $config_ok->show();
+  $config_cancel->show();
+
+  $config_cancel->signal_connect('clicked', sub {
+        my $widget = shift;
+        $widget->parent->parent->parent->destroy();
+  });
+  $config_ok->signal_connect('clicked', sub {
+        my $widget = shift;
+	my $entry_items = shift;
+
+	if ( $module eq "Rover" ) {
+	  foreach my $module_var ( @Rover::config_vars ) {
+            if ( $module_var =~ m/^@/ ) { next; }
+            if ( $module_var =~ m/^%/ ) { next; }
+
+	    my $module_var_name = $module_var;
+	    $module_var_name =~ s/^.// ;
+	    $$module_var_name = $entry_items->{$module_var_name}->get_text() ;
+	  }
+	}
+	foreach my $module_var ( @{ $Rover::registered_vars{ $module } } ) {
+          if ( $module_var =~ m/^@/ ) { next; }
+          if ( $module_var =~ m/^%/ ) { next; }
+
+	  my $module_var_name = $module_var;
+	  $module_var_name =~ s/^.// ;
+	  $$module_var_name = $entry_items->{$module_var_name}->get_text() ;
+	}
+        $widget->parent->parent->parent->destroy();
+  }, \%entry_items );
+
+  $window->show();
+
+  return(0);
+}
+
+sub get_user_credentials {
+  my $credentials_window = new Gtk::Window();
+
+  my $credentials_window_vbox = new Gtk::VBox($false, 0);
+  $credentials_window->add( $credentials_window_vbox );
+  $credentials_window_vbox->show();
+
+  my $credentials_window_hbox1 = new Gtk::HBox($false, 0);
+  $credentials_window_vbox->pack_start( $credentials_window_hbox1, $false, $false, 4);
+  $credentials_window_hbox1->show();
+
+  my $credentials_label = new Gtk::Label($Rover::user ."'s Password: ");
+  $credentials_window_hbox1->pack_start($credentials_label, $false, $false, 0);
+  $credentials_label->show();
+
+  my $credentials_entry = new Gtk::Entry( 100 );
+  $credentials_entry->set_visibility( $false );
+  $credentials_window_hbox1->pack_start($credentials_entry, $true, $true, 0);
+  $credentials_entry->show();
+
+  my $credentials_root_window_hbox1 = new Gtk::HBox($false, 0);
+  $credentials_window_vbox->pack_start( $credentials_root_window_hbox1, $false, $false, 4);
+  $credentials_root_window_hbox1->show();
+
+  my $credentials_root_label = new Gtk::Label("root's Password: ");
+  $credentials_root_window_hbox1->pack_start($credentials_root_label, $false, $false, 0);
+  $credentials_root_label->show();
+
+  my $credentials_root_entry = new Gtk::Entry( 100 );
+  $credentials_root_entry->set_visibility( $false );
+  $credentials_root_window_hbox1->pack_start($credentials_root_entry, $true, $true, 0);
+  $credentials_root_entry->show();
+
+  my $separator = new Gtk::HSeparator();
+  $credentials_window_vbox->pack_start($separator, $true, $true, 5);
+  $separator->show();
+
+  my $count = @Rover::user_credentials ;
+  my $credentials_count_label = new Gtk::Label("Total $Rover::user Passwords: $count");
+  $credentials_window_vbox->pack_start( $credentials_count_label, $false, $false, 4);
+  $credentials_count_label->show();
+
+  my $root_count = @Rover::root_password_list ;
+  my $credentials_root_count_label = new Gtk::Label("Total root Passwords: $root_count");
+  $credentials_window_vbox->pack_start( $credentials_root_count_label, $false, $false, 4);
+  $credentials_root_count_label->show();
+
+  my $credentials_window_hbox3 = new Gtk::HBox($false, 0);
+  $credentials_window_vbox->pack_start( $credentials_window_hbox3, $false, $false, 4);
+  $credentials_window_hbox3->show();
+
+  $separator = new Gtk::HSeparator();
+  $credentials_window_vbox->pack_start($separator, $true, $true, 5);
+  $separator->show();
+
+  my $credentials_bbox1 = new Gtk::HButtonBox();
+  $credentials_window_vbox->pack_start($credentials_bbox1, $false, $false, 0);
+  $credentials_bbox1->show();
+
+  my $credentials_add = new Gtk::Button("Add");
+  my $credentials_clear = new Gtk::Button("Clear");
+  my $credentials_done = new Gtk::Button("Done");
+
+  $credentials_bbox1->add($credentials_add);
+  $credentials_bbox1->add($credentials_clear);
+  $credentials_bbox1->add($credentials_done);
+  $credentials_add->show();
+  $credentials_clear->show();
+  $credentials_done->show();
+
+  $credentials_done->signal_connect('clicked', sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+  $credentials_clear->signal_connect('clicked', sub {
+	my ($widget, $credentials_count_label, $credentials_root_count_label) = @_ ;
+
+	@Rover::user_credentials = ();
+	@Rover::root_password_list = ();
+
+	$credentials_count_label->set_text("Total $Rover::user Passwords: 0");
+	$credentials_root_count_label->set_text("Total root Passwords: 0");
+
+	return(0);
+  }, $credentials_count_label, $credentials_root_count_label);
+
+  $credentials_add->signal_connect('clicked', sub {
+	my ($widget, $credentials_entry, $credentials_root_entry, $credentials_count_label, $credentials_root_count_label) = @_ ;
+
+	my $password = $credentials_entry->get_text();
+	my $root_password = $credentials_root_entry->get_text();
+
+	if ( $password ) {
+	  push (@Rover::user_credentials, $password);
+	  $credentials_entry->set_text("");
+
+	  my $count = @Rover::user_credentials ;
+	  $credentials_count_label->set_text("Total $Rover::user Passwords: $count");
+	}
+	if ( $root_password ) {
+	  push (@Rover::root_password_list, $root_password);
+	  $credentials_root_entry->set_text("");
+
+	  my $root_count = @Rover::root_password_list ;
+	  $credentials_root_count_label->set_text("Total root Passwords: $root_count");
+	}
+
+	return(0);
+  }, $credentials_entry, $credentials_root_entry, $credentials_count_label, $credentials_root_count_label);
+
+  $credentials_window->show();
+  $credentials_window->set_modal( $true );
+
+}
+
+sub run_rover {
+  @Rover::hosts_list = ();
+  open(HOSTS_FILE, $Rover::hosts_file);
+  my @selected_hosts = $hosts_list->selection();
+
+ # Exit if no hosts are selected
+ #
+  if ( ! @selected_hosts ) {
+    Rover::perror("Please select at least one host before running rulesets.\n");
+    return(0);
+  }
+
+  foreach my $hosts_list_item ( @selected_hosts ) {
+    push(@Rover::hosts_list, $hosts_list->get_text($hosts_list_item, 0));
+  }
+  close(HOSTS_FILE);
+
+  my $run_window = new Gtk::Window();
+  $run_window->set_usize(350,350);
+  $run_window->signal_connect('delete_event', sub {
+	my $rows = $hosts_list->rows();
+	@Rover::hosts_list = ();
+	for (my $i=0; $i<$rows; $i++) {
+	  push( @Rover::hosts_list, $hosts_list->get_text($i, 0) );
+	}
+	%hosts_info = ();
+	$rover_progress_bar = undef;
+	return(0);
+  });
+
+  my $run_window_vbox = new Gtk::VBox($false, 0);
+  $run_window->add($run_window_vbox);
+  $run_window_vbox->show();
+
+ # Forgive me for the nested-ness, I know not what I do
+ #
+  my $exit_sub = sub { my $run_window = shift; $run_window->destroy(); };
+  my @run_menu = (	{path => '/_File',
+			 type => '<Branch>'},
+			{path => '/File/Run Status',
+			 callback => sub { &display_status(0) } },
+			{path => '/File/Save Logs',
+			 callback => sub {
+				my $logs_file = new Gtk::FileSelection( "Save Logs" );
+				$logs_file->ok_button->signal_connect('clicked', sub {
+					my $widget = shift;
+					my $logs_filename = $widget->parent->parent->parent->get_filename();
+					$widget->parent->parent->parent->destroy();
+
+					my $pwd = $ENV{'PWD'};
+					eval {
+					  require Archive::Tar;
+					  my $tar = Archive::Tar->new;
+
+					  chdir("$Rover::logs_dir");
+					  foreach my $host_name ( @Rover::hosts_list ) {
+					    $tar->add_files("$host_name.log");
+					  }
+					  $tar->write($logs_filename);
+					};
+					if ( $@ ) {
+					  Rover::perror("Could not save tar file '$logs_filename':\n\n$@\n");
+					}
+
+					chdir($pwd);
+					return(0);
+				});
+				$logs_file->cancel_button->signal_connect('clicked', sub {
+					my $widget = shift;
+					$widget->parent->parent->parent->destroy();
+					return(0);
+				});
+
+				$logs_file->set_filename( 'rover-logs.tar');
+
+				$logs_file->show();
+				$logs_file->set_modal( $true );
+			}},
+			{path => '/File/sep1',
+			 type => '<Separator>' },
+			{path => '/File/_Exit',
+			 callback => sub { &$exit_sub($run_window) } },
+			{path => '/_Logs',
+			 type => '<Branch>'},
+			{path => '/Logs/Search',
+			 callback => sub {
+				# This routine creates a search window to search through all the log files
+				#
+				my $search_window = new Gtk::Window();
+
+				my $search_vbox = new Gtk::VBox($false, 0);
+				$search_window->add($search_vbox);
+				$search_vbox->show();
+
+				my $search_menu_box = new Gtk::HBox($false, 0);
+				$search_vbox->pack_start($search_menu_box, $false, $false, 0);
+				$search_menu_box->show();
+
+				my $search_entry = new Gtk::Entry( 100 );
+				my @search_clist_titles = ("Hostname", "Matching Line");
+				my $search_clist = new_with_titles Gtk::CList( @search_clist_titles );
+
+				my $exit_search = sub { my $search_window = shift; $search_window->destroy(); };
+				my $save_search_text = sub {
+					my $search_clist = shift;
+					my $search_file = new Gtk::FileSelection("Save Search Text");
+					$search_file->ok_button->signal_connect('clicked', sub {
+						my ($widget, $search_clist) = @_ ;
+						my $filename = $widget->parent->parent->parent->get_filename();
+						$widget->parent->parent->parent->destroy();
+
+						open(FOUT, "> $filename") or Rover::perror("Could not save to file '$filename'\n");
+						my $count = $search_clist->rows();
+						for (my $i=0; $i<$count; $i++) {
+						  print FOUT $search_clist->get_text($i,0) .",". $search_clist->get_text($i,1) ."\n";
+						}
+						close(FOUT);
+
+						return(0);
+					}, $search_clist );
+					$search_file->cancel_button->signal_connect('clicked', sub {
+						my $widget = shift;
+						$widget->parent->parent->parent->destroy();
+					});
+
+					$search_file->show();
+					$search_file->set_modal( $true );
+				};
+				my @search_menu_items = (	{path => '/_File',
+								 type => '<Branch>'},
+								{path => '/File/Save',
+								 callback => sub { &$save_search_text( $search_clist ) }},
+								{path => '/File/sep1',
+								 type => '<Separator>'},
+								{path => '/File/_Exit',
+								 callback => sub { &$exit_search($search_window) } },
+								);
+
+				my $search_menu = create_menu_bar($search_window, @search_menu_items);
+				$search_menu_box->add($search_menu);
+				$search_menu->show();
+
+				my $search_hbox1 = new Gtk::HBox($false, 0);
+				$search_vbox->pack_start($search_hbox1, $false, $false, 10);
+				$search_hbox1->show();
+
+				my $search_label = new Gtk::Label("Search Text: ");
+				$search_hbox1->pack_start($search_label, $false, $false, 0);
+				$search_label->show();
+
+				$search_hbox1->pack_start($search_entry, $true, $true, 0);
+				$search_entry->show();
+
+				my $search_go = new Gtk::Button("Go");
+				$search_hbox1->pack_start($search_go, $false, $false, 5);
+				$search_go->show();
+
+				my $search_swindow = new Gtk::ScrolledWindow( undef, undef );
+				$search_swindow->set_policy('automatic', 'automatic');
+				$search_swindow->set_usize( 500, 300 );
+				$search_vbox->pack_start($search_swindow, $true, $true, 0);
+				$search_swindow->show();
+
+				$search_clist->set_column_width(0, 75);
+				$search_clist->set_column_width(1, 200);
+				$search_clist->set_selection_mode('extended');
+				$search_clist->column_titles_active();
+				$search_swindow->add_with_viewport( $search_clist );
+				$search_clist->show();
+
+				$search_go->signal_connect('clicked', sub {
+					my ($widget, $search_clist, $search_entry) = @_ ;
+
+					my $search_string = $search_entry->get_text();
+					$search_clist->clear();
+
+					# Yes, I know about command pipes, i like this better
+					#
+					foreach my $host_name ( @Rover::hosts_list ) {
+					  open(FIN, "$Rover::logs_dir/$host_name.log") or next;
+					  while (<FIN>) {
+					    chomp $_ ;
+					    if ( m/$search_string/ ) {
+					      my @tmp_list = ([ $host_name => $_ ]) ;
+					      $search_clist->append( @{ $tmp_list[0] } );
+					    }
+					  }
+					  close(FIN);
+					}
+
+					return(0);
+				}, $search_clist, $search_entry);
+
+				$search_window->show();
+				$search_window->set_modal( $true );
+			}},
+			{path => '/Logs/Clean',
+			 callback => sub {
+				# This routine removes ^M characters from the log files, a problem
+				# that may be solved at the expect level, but I never really figured
+				# it out so....
+				#
+				foreach my $host_name ( @Rover::hosts_list ) {
+				  open(FIN, "$Rover::logs_dir/$host_name.log") or next;
+				  open(FOUT, "> $Rover::logs_dir/$host_name.log.tmp");
+				  foreach my $line (<FIN>) {
+				    $line =~ s///g ;
+
+				    print FOUT $line ;
+				  }
+				  close(FIN);
+				  close(FOUT);
+
+				  unlink("$Rover::logs_dir/$host_name.log");
+				  copy("$Rover::logs_dir/$host_name.log.tmp", "$Rover::logs_dir/$host_name.log");
+				  unlink("$Rover::logs_dir/$host_name.log.tmp");
+				}
+
+				Rover::perror("All ^M characters have been removed from the log files");
+				return(0);
+			}, });
+
+ # Build success and failure list windows
+ #
+  my $run_window_hbox1 = new Gtk::HBox($false, 0);
+  $run_window_vbox->pack_start($run_window_hbox1, $false, $false, 0);
+  $run_window_hbox1->show();
+
+  my $run_window_menu = create_menu_bar($run_window, @run_menu);
+  $run_window_hbox1->add($run_window_menu);
+  $run_window_menu->show();
+
+  my $run_window_hbox2 = new Gtk::HBox($true, 0);
+  $run_window_vbox->pack_start($run_window_hbox2, $true, $true, 0);
+  $run_window_hbox2->show();
+
+  my $run_success_frame = new Gtk::Frame("Success");
+  $run_window_hbox2->pack_start($run_success_frame, $true, $true, 0);
+  $run_success_frame->show();
+
+  my $run_success_swindow = new Gtk::ScrolledWindow( undef, undef );
+  $run_success_swindow->set_usize( 100, 100 );
+  $run_success_swindow->set_policy('automatic', 'automatic');
+  $run_success_frame->add($run_success_swindow);
+  $run_success_swindow->show();
+
+  $rover_success_window_list = new Gtk::List();
+  $rover_success_window_list->set_selection_mode('single');
+  $run_success_swindow->add_with_viewport( $rover_success_window_list );
+  $rover_success_window_list->show();
+  
+  my $run_failure_frame = new Gtk::Frame("Failure");
+  $run_window_hbox2->pack_start($run_failure_frame, $true, $true, 0);
+  $run_failure_frame->show();
+
+  my $run_failure_swindow = new Gtk::ScrolledWindow( undef, undef );
+  $run_failure_swindow->set_usize( 100, 100 );
+  $run_failure_swindow->set_policy('automatic', 'automatic');
+  $run_failure_frame->add($run_failure_swindow);
+  $run_failure_swindow->show();
+
+  $rover_failure_window_list = new Gtk::List();
+  $rover_failure_window_list->set_selection_mode('single');
+  $run_failure_swindow->add_with_viewport( $rover_failure_window_list );
+  $rover_failure_window_list->show();
+  
+ # Put progress bar into a box, allowing us to turn it on and off
+ #
+  my $progress_box = new Gtk::VBox( $false, $false );
+  $run_window_vbox->pack_start($progress_box, $false, $false, 0);
+  $progress_box->hide();
+
+ # Progress bar
+ #
+  my $progress_separator = new Gtk::HSeparator();
+  $progress_box->pack_start($progress_separator, $false, $false, 0);
+  $progress_separator->show();
+
+  my $host_count = @Rover::hosts_list;
+  my $adj = new Gtk::Adjustment( 0, 0, $host_count, 0, 0, 0);
+  $rover_progress_bar = new_with_adjustment Gtk::ProgressBar( $adj );
+  $rover_progress_bar->set_format_string("%p%%");
+  $rover_progress_bar->set_show_text(1);
+  $rover_progress_bar->set_value(0);
+  $progress_box->pack_start($rover_progress_bar, $false, $false, 5);
+  $rover_progress_bar->show();
+
+  my $run_stop_bbox = new Gtk::HButtonBox();
+  $run_stop_bbox->set_layout_default('spread');
+  $progress_box->pack_start($run_stop_bbox, $false, $false, 5);
+  $run_stop_bbox->show();
+
+  my $run_stop = new Gtk::Button("Stop Processing");
+  $run_stop_bbox->add($run_stop);
+  $run_stop->show();
+
+  $run_stop->signal_connect('clicked', sub {
+	if ( ! $Rover::ipc_msg ) { return(0); }
+
+	$Rover::ipc_msg->snd(1000,":STOP_PROCESSING::\n");
+  });
+
+ # Put run controls into a box, allowing us to turn it on and off
+ #
+  my $run_controls_box = new Gtk::VBox( $false, $false );
+  $run_window_vbox->pack_start($run_controls_box, $false, $false, 0);
+  $run_controls_box->show();
+
+  my $separator1 = new Gtk::HSeparator();
+  $run_controls_box->pack_start($separator1, $false, $false, 5);
+  $separator1->show();
+
+ # Build quick command text entry
+ #
+  my $run_window_hbox3 = new Gtk::HBox($false, 0);
+  $run_controls_box->pack_start($run_window_hbox3, $false, $false, 2);
+  $run_window_hbox3->show();
+
+  my $run_window_qcomm_label = new Gtk::Label("Quick Command");
+  $run_window_hbox3->pack_start($run_window_qcomm_label, $false, $false, 2);
+  $run_window_qcomm_label->show();
+
+  my $run_window_qcomm_entry = new Gtk::Entry(200);
+  $run_window_hbox3->pack_start($run_window_qcomm_entry, $true, $true, 2);
+  $run_window_qcomm_entry->show();
+
+ # Check buttons for overriding root and/or command set
+ #
+  my $run_root_bbox1 = new Gtk::HButtonBox();
+  $run_root_bbox1->set_layout_default('spread');
+  $run_controls_box->pack_start($run_root_bbox1, $false, $false, 0);
+  $run_root_bbox1->show();
+
+  my $run_qcomm_cbutton = new Gtk::CheckButton("Quick Command");
+  $run_qcomm_cbutton->set_active( $false );
+  $run_root_bbox1->add($run_qcomm_cbutton);
+  $run_qcomm_cbutton->show();
+
+  my $run_root_bbox2 = new Gtk::HButtonBox();
+  $run_root_bbox2->set_layout_default('spread');
+  $run_controls_box->pack_start($run_root_bbox2, $false, $false, 0);
+  $run_root_bbox2->show();
+
+  my $run_root_cbutton = new Gtk::CheckButton("As Root");
+  $run_root_cbutton->set_active( $false );
+  $run_root_bbox2->add($run_root_cbutton);
+  $run_root_cbutton->show();
+
+  if ( $Rover::root_access_required ) {
+    $run_root_cbutton->set_active( $true );
+  }
+
+  my $separato2 = new Gtk::HSeparator();
+  $run_controls_box->pack_start($separato2, $false, $false, 10);
+  $separato2->show();
+
+  my $run_bbox = new Gtk::HButtonBox();
+  $run_bbox->set_layout('spread');
+  $run_controls_box->pack_start($run_bbox, $false, $false, 0);
+  $run_bbox->show();
+
+  my $run_b1 = new Gtk::Button("Run");
+  $run_bbox->add( $run_b1 );
+  $run_b1->show();
+
+  my $run_b2 = new Gtk::Button("Close");
+  $run_bbox->add( $run_b2 );
+  $run_b2->show();
+
+ # Close window and restore original config
+ #
+  $run_b2->signal_connect('clicked', sub {
+	my $widget = shift;
+
+	@Rover::hosts_list = ();
+	load_hosts();
+	%hosts_info = ();
+
+	$widget->parent->parent->parent->parent->destroy();
+  },);
+
+ # Actually run rover
+ #
+  $run_b1->signal_connect('clicked', sub {
+	my ($widget, $run_root_cbutton, $run_qcomm_cbutton, $run_window_qcomm_entry, $progress_box, $run_controls_box) = @_ ;
+
+	$rover_progress_bar->set_value(0);
+	$run_controls_box->hide();
+	$progress_box->show();
+
+	$Rover::root_access_required = $run_root_cbutton->get_active() ;
+	if ( ! $Rover::root_access_required ) { $Rover::root_access_required = 0; }
+
+	# If we are running a quick command, store all the old os rulesets
+	#
+	my %old_rulesets = ();
+	if ( $run_qcomm_cbutton->get_active() ) {
+	  foreach my $os ( @Rover::OS_TYPES ) {
+	    my $tmp_os = "Rover::$os";
+
+	    my @tmp_os_array = ();
+	    if ( @{$tmp_os} ) { @tmp_os_array = @{$tmp_os}; }
+
+	    $old_rulesets{$os} = \@tmp_os_array ;
+	    @{$tmp_os} = ();
+	  }
+
+	  my $command = "execute(". $run_window_qcomm_entry->get_text .");";
+	  my @tmp_ruleset = ($command);
+	  $Rover::rulesets{'GTK_Tmp_Ruleset'} = \@tmp_ruleset ;
+	  push(@Rover::ALL, 'GTK_Tmp_Ruleset');
+	}
+
+	# Reset the success/failure windows
+	#
+	$rover_success_window_list->clear_items( 0, -1 );
+	$rover_failure_window_list->clear_items( 0, -1 );
+	%hosts_info = ();
+
+	# Purge the log files
+	#
+	unlink <$Rover::logs_dir/*.log> ;
+	Rover::clear_counters;
+
+	# Start IPC watcher process
+	#
+	$Rover::ipc_msg = new IPC::Msg(IPC_PRIVATE, S_IRWXU) || die "Could not create msg queue\n";
+	my $pid = fork();
+
+	if ( $pid == -1 ) {
+	  print "Could not fork\n";
+	  _exit(0);
+	}
+
+	if ( $pid == 0 ) {
+	  Gtk->main_quit;
+	  $Rover::external_watcher = 1;
+	  process_hosts();
+	  _exit(0);
+	}
+
+	my $start_time = time();
+
+	$Rover::parent_id = $$;
+	$Rover::external_watcher = 0;
+	Rover::ipc_watcher_log_parse();
+
+	waitpid(-1, WNOHANG);
+	$progress_box->hide();
+	$run_controls_box->show();
+
+	my $total_time = time() - $start_time ;
+	display_status($total_time);
+
+	# Now restore old rulesets if we were only running a quick command
+	#
+	if ( $run_qcomm_cbutton->get_active() ) {
+	  foreach my $os ( @Rover::OS_TYPES ) {
+	    my $tmp_os = "Rover::$os";
+	    if ( ! @{$tmp_os} ) { next; }
+
+	    @{$tmp_os} = @{$old_rulesets{$os}} ;
+	  }
+	}
+	delete $Rover::rulesets{'GTK_Tmp_Ruleset'};
+
+	return(0);
+  }, $run_root_cbutton, $run_qcomm_cbutton, $run_window_qcomm_entry, $progress_box, $run_controls_box);
+
+  $run_window->show();
+  $run_window->set_modal( $true );
+}
+
+sub display_status {
+  my $execution_time = shift;
+
+  my $dialog = new Gtk::Dialog();
+
+  $dialog->set_title("Execution Status");
+  my $button = new Gtk::Button("Close");
+  $button->signal_connect("clicked", sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+  $dialog->action_area->pack_start( $button, $false, $false, 0 );
+  $button->show();
+
+  my $label = new Gtk::Label();
+
+  my $count_failed_hosts = @Rover::report_failed_hosts + (@Rover::hosts_list - @Rover::global_process_completed_hosts);
+  if ( $count_failed_hosts ) {
+    $label->set_usize('200', '250');
+    my $hosts_not_completed = @Rover::hosts_list - @Rover::global_process_completed_hosts;
+
+    $label->set("-------------------------
+FAILURE COUNT
+-------------------------
+Bad Passwords   : $Rover::report_failed_password
+Root Failures     : $Rover::report_failed_root
+Profile Errors      : $Rover::report_failed_profile
+Network Errors   : $Rover::report_failed_network
+Failed Rulesets  : $Rover::report_failed_runrules
+
+Canceled           : $hosts_not_completed
+-------------------------
+Total Failed:       $count_failed_hosts
+
+Completed in $execution_time seconds.
+");
+
+  } else {
+    $label->set("All hosts completed successfully in $execution_time seconds.");
+  }
+
+
+  $dialog->vbox->pack_start( $label, $true, $true, 0 );
+  $label->show();
+
+  $dialog->show();
+  $dialog->set_modal( $true );
+
+  return(0);
+}
+
+sub create_menu_bar {
+   # shamelessly stolen from: http://personal.riverusers.com/~swilhelm/gtkperl-tutorial/itemfactory.html
+   #
+   my ( $window, @menu_items ) = @_;
+
+   my $menubar;
+   my $item_factory;
+   my $accel_group;
+
+   $accel_group = new Gtk::AccelGroup();
+
+   # This function initializes the item factory.
+   # Param 1: The type of menu - can be 'Gtk::MenuBar', 'Gtk::Menu',
+   #          or 'Gtk::OptionMenu'.
+   # Param 2: The path of the menu.
+   # Param 3: The accelerator group.  The item factory sets up
+   #          the accelerator table while generating menus.
+   $item_factory = new Gtk::ItemFactory( 'Gtk::MenuBar',
+					 '<main>',
+					 $accel_group );
+
+   # This function generates the menu items. Pass the item factory,
+   # the number of items in the array, the array itself, and any
+   # callback data for the the menu items.
+   $item_factory->create_items( @menu_items );
+
+   # Attach the new accelerator group to the window.
+   $window->add_accel_group( $accel_group );
+
+   # Finally, return the actual menu bar created by the item factory.
+   #*menubar = gtk_item_factory_get_widget (item_factory, "&lt;main>");
+   return ( $item_factory->get_widget( '<main>' ) );
+}
+
+sub help_module {
+  my $module_name = shift;
+
+  my $help_window = new Gtk::Window();
+  $help_window->set_usize(575,500);
+  $help_window->set_policy($true, $true, $false);
+  $help_window->set_title("Help Contents - $module_name");
+  $help_window->border_width(0);
+
+  my $help_vbox = new Gtk::VBox($false, 0);
+  $help_window->add($help_vbox);
+  $help_vbox->show();
+
+  my $help_table = new Gtk::Table( 2, 2, $false );
+  $help_table->set_row_spacing( 0, 2 );
+  $help_table->set_col_spacing( 0, 2 );
+  $help_vbox->pack_start( $help_table, $true, $true, 0 );
+  $help_table->show();
+
+  my $help_text = new Gtk::Text( undef, undef );
+  $help_text->set_editable( $false );
+  $help_table->attach( $help_text, 0, 1, 0, 1,
+		[ 'expand', 'shrink', 'fill' ],
+		[ 'expand', 'shrink', 'fill' ],
+		0, 0 );
+  $help_text->show();
+
+  my $vscrollbar = new Gtk::VScrollbar( $help_text->vadj );
+  $help_table->attach( $vscrollbar, 1, 2, 0, 1, 'fill',
+		[ 'expand', 'shrink', 'fill' ], 0, 0 );
+  $vscrollbar->show();
+
+ # For some reason certain boxes dont have Config scope at this point.
+ # I suspect a bug in that version of perl, but havnt dug into it.
+ # Until then...
+ #
+  my $perldoc_command;
+  if ( ! $Config{'scriptdir'} ) {
+    $perldoc_command = "perldoc";
+  } else {
+    $perldoc_command = $Config{'scriptdir'} ."/perldoc";
+  }
+  open(FIN, "$perldoc_command -t $module_name 2>&1 |");
+  while (<FIN>) {
+    $help_text->insert( undef, undef, undef, $_ );
+  }
+  close(FIN);
+
+  $help_window->show();
+}
+
+sub about_rover {
+  my $dialog = new Gtk::Dialog();
+
+  $dialog->set_title("About RoverGTK");
+  my $button = new Gtk::Button("Close");
+  $button->signal_connect("clicked", sub { my $widget = shift; $widget->parent->parent->parent->destroy(); });
+  $dialog->action_area->pack_start( $button, $false, $false, 0 );
+  $button->show();
+
+  my $label = new Gtk::Label();
+
+  $label->set_usize('200', '75');
+  $label->set("
+RoverGTK
+v2.0
+
+2006 - Bryan Bueter
+");
+
+  $dialog->vbox->pack_start( $label, $true, $true, 0 );
+  $label->show();
+
+  $dialog->show();
+  $dialog->set_modal( $true );
+
+  return(0);
+};
+
+__END__
+
+=head1 NAME
+
+rovergtk - Gtk front end to Rover Perl module
+
+=head1 DESCRIPTION
+
+The rovergtk command will lauch the graphical interface to Rover.
+Through this interface you can configure Rover and its modules,
+create rulesets, manage hosts, and of course run a Rover
+session.
+
+When rovergtk is lauched, the default Rover config files are
+loaded.  From the main window you are able to select one or more
+hosts and configure which rulesets are to be run on which operating
+system.
+
+=head1 CONFIGURING ROVER
+
+=item Rulesets
+
+=over 4
+
+You can learn more about how rulesets are defined with "perldoc Rover".
+Basically, a ruleset is a group of command executed together.  An example
+of the contents of a ruleset is as follows:
+
+=over 6
+
+  execute(mkdir /tmp/testdir);
+  put_file(/etc/issue.net,/tmp/testdir/issue.net);
+  execute(chmod a+r /tmp/testdir/issue.net);
+
+=back
+
+In order to execute a ruleset, you must assign it to an operating system.
+Durring run time, Rover checks each host for the OS type, then executes
+the list of Rulesets assigned to that OS.
+
+=back
+
+=item Editing Rulesets
+
+=over 4
+
+From the main menu, select "Config" => "Rulesets".  This will open a window
+that allows you to create, edit, and delete rulesets.  From this window,
+all the available modules and their routines exported to Rover
+are displayed.
+
+When creating a ruleset, you can add a rule by selecting the exported routine,
+entering a parameter and pressing the "Add" button.  Rules can be removed by
+selecting them in the preview pane and pressing the "Remove" button.  You must
+then name and save your ruleset before it becomes avail to use.
+
+To edit an existing ruleset, select the "Load" button.  This will generate a
+list of available rulesets to load.  Select one and press "Ok".
+
+After a ruleset has been created, you can delete it by selecting the "Delete"
+button.  This will generate a list of rulesets available for deletion.
+
+The "New" button clears all fields so that a new ruleset can be edited.
+
+=back
+
+=item Modules
+
+=over 4
+
+By selecting "Config" => "Modules", you can add, remove, or configure Rover
+modules.
+
+When you add a new module, you must search for the module file.  rovergtk will
+then move it to ~/.rover/contrib and load it into the current config.  In order
+to keep the module for future use, you must then save your config.
+
+By selecting the module, and selecting the "Ok" button, you can then modify the
+variables registerd by that module.  Again, you must save the Rover config in
+order to keep the new values.
+
+=back
+
+=item Rover Variables
+
+=over 4
+
+You can modify Rover variables from "Config" => "Rover" menu option.  From
+this window, you can modify all the registered Rover variables.  See
+"perldoc Rover" for details about each variable.
+
+=back
+
+=head1 MAIN WINDOW
+
+=item Ruleset
+
+=over 4
+
+The Ruleset window list all the available rulesets defined in Rover.
+Rulesets are stored in the main config file (~/.rover/config.run).
+
+=back
+
+=item Ruleset Preview
+
+=over 4
+
+When a ruleset is selected, this window is updated with the contents
+of the ruleset.
+
+=back
+
+=item Target OS
+
+=over 4
+
+This section lists all OS's available when configuring which rulesets
+to run.  You can determine which OS you whish to add a ruleset to by
+checking the box next to the OS name.
+
+=back
+
+=item Add / Clear / Remove
+
+=over 4
+
+These buttons add a ruleset to one or more OS, clears the entire list
+of OS rulesets, or removes an OS ruleset config.  The preview window
+below these buttons shows the current state of what is going to be ran
+on what OS.
+
+You can add a ruleset by selecting it in the Ruleset screen,
+checking one or more OS, and pressing the "Add" button.
+
+When the "Clear" button is pressed, all the rulesets are removed from
+being run on any OS.
+
+You can remove an OS list by highlighting the Target OS in the preview
+pane, and clicking the "Remove" button.  You cannot remove individual
+rulesets from an OS, you can only clear the entire OS.
+
+=back
+
+=item Hosts
+
+=over 4
+
+This is the list of hosts that have been loaded into Rover.
+The source of this list is the main hosts config file (~/.rover/hosts.txt).
+If you are storing more then just the hostname in this config file,
+rovergtk will add the extra information in separate columns, and allow
+you to sort by those.  See "perldoc Rover" for more details on
+how host information is stored.
+
+By default, rovergtk does not select any hosts when running a Rover
+session.  You must highlight one or more hosts within this section. You
+can use the shift and control keys to select multiple hosts within the list.
+
+This window also allows you to manage your list of hosts.  You can add, delete,
+or save the list of hosts shown in this window.  If you make any changes
+to the list, you must save your changes using the "Save" button.  Hosts are
+stored separate from the main Rover configuration, so chosing File -> Save
+from the menu will not save the hosts list.
+
+=back
+
+=head1 MAIN MENU
+
+=item File => Run Rover
+
+=over 4
+
+This option will launch a run window with the current configuration.  From
+this window you can launch the configured rulesets to be ran against the
+selected hosts, or you can override the rulesets with a "Quick Command".
+
+The "Quick Command" is a command that will be executed across ALL OS types.
+You do not to wrap the command into an execute() block, as rovergtk will
+do that for you.
+
+=back
+
+=item File => Set Password
+
+=over 4
+
+This is a secure way to load passwords into the Rover config.  These passwords
+are only stored in memory, and never to any file.  Each time you launch
+rovergtk, the passwords will be cleared again.  You can set both user and root
+passwords using this option.
+
+=back
+
+=item File => Open
+
+=over 4
+
+Open a Rover config file and load the options.  All current options will be
+reset back to their defaults prior to loading the new options.
+
+=back
+
+=item File => Save
+
+=over 4
+
+Save the current Rover config to the default ~/.rover/config.run file.
+
+=back
+
+=item File => Save As
+
+=over 4
+
+Save the current Rover config to another file other then the default config file.
+
+=back
+
+=item File => Quit
+
+=over 4
+
+Exit the rovergtk program.
+
+=back
+
+=item Config => Rulesets
+
+=over 4
+
+Launch the ruleset configuration window.
+
+=back
+
+=item Config => Modules
+
+=over 4
+
+Launch the module configuration window.
+
+=back
+
+=item Config => Rover
+
+=over 4
+
+Configure Rover variables.
+
+=back
+

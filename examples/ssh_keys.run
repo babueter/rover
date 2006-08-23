@@ -1,0 +1,48 @@
+#
+# Push SSH keys to remote hosts
+#
+# Description: This Rover config file will push local ssh public keys
+# to remote hosts.  This turns on expert mode, and sets all hosts up
+# to run the contained ruleset.
+#
+# The ruleset SSH_Push_Keys will push out version 1 or 2 ssh public keys
+# for OpenSSH if they exist locally.  It will fail with errors if none
+# exist.
+#
+# It is safe to run this more then once, as it checks to see if the key
+# has already been pushed.
+#
+ALL:SSH_Push_Keys;
+
+GENERAL:{
+	$Rover::expert_mode = 1;
+};
+
+SSH_Push_Keys:{
+	Rover::pwarn("Please be sure expert mode is being used");
+	execute("[ ! -d './ssh' ] && (mkdir .ssh ; chmod 0700 .ssh)", $exp_obj);
+	if (! -f "$ENV{HOME}/.ssh/id_rsa.pub" && ! -f "$ENV{HOME}/.ssh/id_dsa.pub" && ! -f "$ENV{HOME}/.ssh/identity.pub") {
+	  Rover::pinfo($hostname,"Error, no keys to push");
+	  die "Error: no keys to push\n";
+	}
+	if ( -f "$ENV{HOME}/.ssh/id_rsa.pub" ) {
+	  put_file("$ENV{HOME}/.ssh/id_rsa.pub,.ssh/key_to_add", $exp_obj, $hostname);
+	  execute("HOST_KEY=`awk '{print \$3}' .ssh/key_to_add`", $exp_obj);
+	  execute("grep \$HOST_KEY .ssh/authorized_keys2 || cat .ssh/key_to_add >> .ssh/authorized_keys2", $exp_obj);
+	  execute("rm -f .ssh/key_to_add", $exp_obj);
+	}
+	if ( -f "$ENV{HOME}/.ssh/id_dsa.pub" ) {
+	  put_file("$ENV{HOME}/.ssh/id_dsa.pub,.ssh/key_to_add", $exp_obj, $hostname);
+	  execute("HOST_KEY=`awk '{print \$3}' .ssh/key_to_add`", $exp_obj);
+	  execute("grep \$HOST_KEY .ssh/authorized_keys2 || cat .ssh/key_to_add >> .ssh/authorized_keys2", $exp_obj);
+	  execute("rm -f .ssh/key_to_add", $exp_obj);
+	}
+	if ( -f "$ENV{HOME}/.ssh/identity.pub" ) {
+	  put_file("$ENV{HOME}/.ssh/identity.pub,.ssh/key_to_add", $exp_obj, $hostname);
+	  execute("HOST_KEY=`awk '{print \$3}' .ssh/key_to_add`", $exp_obj);
+	  execute("grep \$HOST_KEY .ssh/authorized_keys || cat .ssh/key_to_add >> .ssh/authorized_keys2", $exp_obj);
+	  execute("rm -f .ssh/key_to_add", $exp_obj);
+	}
+	execute("[ -f .ssh/authorized_keys2 ] && chmod 0600 .ssh/authorized_keys2", $exp_obj);
+	execute("[ -f .ssh/authorized_keys ] && chmod 0600 .ssh/authorized_keys", $exp_obj);
+};

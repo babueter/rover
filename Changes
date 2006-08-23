@@ -1,0 +1,101 @@
+2.02
+----
+* bugfix: 1518741: File_Transfer not thread safe
+* bugfix: 1518389: Threading broken for external watcher
+* bugfix: 1518723: Shell_Access_Routines overwrites Rover::shell_access_routine
+* bugfix: 1518390: Rover save function does not work for array variables
+* bugfix: 1510834: Ssh processes hang around after rover is interrupted
+* bugfix: 1509965: ssh_keys.run Example syntax wrong
+* bugfix: na: wrapped execs around all subroutine reference calls
+* bugfix: na: no longer redirect stdin/stdout/stderr on children (for debuggin)
+* bugfix: na: checks for root when using --install-deps for Makefile.PL
+* bugfix: na: Work around for Config module scope
+* bugfix: na: Create hosts.txt file if it doesnt exist by default
+* feature: 1509985: Add progress bar and made it active during a rover run
+* feature: 1510835: Ability to stop a run in progress
+* feature: na: Added host picker menu option
+* feature: na: Shell command "commands" to list exported ruleset commands
+* feature: na: Ability to edit rulesets as block of text
+* feature: na: Misc. UI improvements
+
+* This version changes the way children processes communicate to the watcher.
+Previously a named pipe was used ($Rover::ipc_fifo), now System V IPC
+message queues are used ($Rover::ipc_msg).  This eliminates the need to do
+file locking within Rover, and improves client/watcher communications as
+we can see how many messages are in the queue.
+
+2.01
+----
+* bugfix: 1459410: Options --no-auth and --no-banner dont work
+* bugfix: 1459592: Can't call method "clear_accum" errors in run_rules
+* bugfix: 1459625: rover hangs when ssh key is not in known_hosts file
+* bugfix: 1459414: Makefile.PL exits with failure after building Gtk
+* bugfix: na: fixed use of uninitialized value errors in sub run_rover
+* bugfix: na: loss of parent process when forking for run_rover sub
+* feature: 1460706: Chose random ipc_fifo file at runtime
+* feature: na: updated rover shell commands and help menu
+* feature: na: added documentation to rovergtk
+* feature: na: Misc. UI improvements
+* feature: na: added examples directory and content
+
+2.00
+----
+Entire rewrite, Rover now builds like a normal perl module and installs
+rover and rovergtk scripts in /usr/bin.  Included modules have also been
+moved to Rover subdir, and are included as Rover::<Module>.
+
+1.01
+----
+* bugfix: 1436718: SFTP doesnt work on some systems where SCP does
+* bugfix: 1436808: shell_by_ssh doesnt use all passwords on occasion
+* bugfix: 1408209: Takes too long to kill processes that timeout
+* buffix: 1409258: Use Net::Telnet by default instead of spawing telnet
+* bugfix: 1409259: Threading fails because sub run_rules exits
+* bugfix: na: Created more generic user_prompt in default commands.run
+* bugfix: na: Fixed format of various debug messages
+* bugfix: na: OS type UNKNOWN created for hosts with no uname command
+* bugfix: na: Regex for password in Shell_Access_Routines.pm made more generic
+* bugfix: na: updated documentation of File_Transfer module
+* bugfix: na: updated heading of File_Transfer.pm for correctness
+* feature: 1408229: Add a quick command feature
+
+1.00
+----
+* bugfix: 1028791 - Fix build_config regex for end of ruleset
+* bugfix: 1037750: FileTransfer.pm failes with leading/trailing white space
+* bugfix: 1040010: Root_Access_Routines su/sudo fail if loging in as root.
+* bugfix: 1040015: misspelling of Shell_Access_Routines throughout module
+* bugfix: 1040863 - shell_by_rlogin hangs when rlogin command exists
+* bugfix: 1045493 - Multiple bugs/feature requests in User_Admin.pm
+* bugfix: 1047116: Process_hosts_fork does not calculate remainder correctly
+* bugfix: 1057005: Os type not found after get_shell is called
+* bugfix: 1058248: User_Admin.pm module does not export unlock correctly
+* bugfix: 1086460 - User_Admin::useradd() doesnt detect /export/home on Solaris
+* bugfix: 1226310: User_Admin::unlock fails due to username checking
+* bugfix: 1378812: Logins take a very long time when server is down
+* bugfix: fixed rover hang if .messages does not exist
+* feature: 1029398: now prints elapsed time to process hosts after execution
+* feature: 1040009: Add option to allow rlogin as self, instead of $Rover::user
+* feature: 1045488 - Print error message at debug level 1 for failed commands
+* feature: 1225515: Add rcp option for file transfer
+* feature: 1226325: Make grouplist and userlist fail when accounts dont exist
+* feature: 1376390: Add contrib section for non-official modules
+* feature: 1387140: Include support for bundled IO::Tty packages
+* feature: : Added module InteractiveShell.pm
+* feature: : Added module Password.pm
+* feature: : Added unlock() function to User_Admin.pm
+* feature: none - added option to use su, instead of su - in get_root_by_su function
+
+0.02
+----
+* bugfix: failed get_root reporting fixed
+* soft_close() all connections after commands are ran
+* changed -d option to set $Rover::debug = 2
+* changed -D option to turn Expect debuging on
+* now printing error messages to STDERR
+* fixed some debug printing, added more debug level 1 messages
+
+0.01
+----
+* added expert mode for command interpretation.
+* re-organized get_shell/get_root logic.

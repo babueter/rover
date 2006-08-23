@@ -1,0 +1,23 @@
+#
+# Sample profile for Rover
+#
+
+if [ -z "${USER}" ];then
+  if [ -x "/usr/xpg4/bin/id" ];then
+    USER=`/usr/xpg4/bin/id -u -n`
+    export USER
+  fi
+fi
+
+HOST=`hostname`
+if [ ${SHELL##*/} = "ksh" -o ${SHELL##*/} = "bash" ]; then
+  PS1='[${USER}@${HOST%%.*} ${PWD##*/}]\$ '
+
+  set -o vi
+else
+  PS1="$ "
+fi
+PS2='  '
+
+export HOST USER PS1 PS2
+

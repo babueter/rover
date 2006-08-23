@@ -1,0 +1,10 @@
+#
+# Push sample profile to remote UNIX hosts
+#
+ALL:Profile;
+
+Profile:{
+	put_file(sample_profile,.profile);
+	put_file(sample_profile,.bash_profile);
+	execute(chmod 640 .profile .bash_profile);
+};

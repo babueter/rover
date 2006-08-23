@@ -1,0 +1,32 @@
+#
+# Find running Oracle processes
+#
+# Description: This script will find running oracle instances,
+# listener processes, and database snmp agents.
+#
+# After running this ruleset, use the following syntax to find the
+# results:
+#
+#     rover -S '^INSTANCE|^LISTENER|^DBSNMP'
+#
+# The output will be of the form: hostname,process type,pid
+# Because some os's run more then one snmp agent running, no PID is
+# printed for DBSNMP
+# 
+
+ALL:Oracle_Instances;
+
+Oracle_Instances:{
+  # Find running instances
+	send(ps -ef|grep -v $$|awk ');
+	send(/pmon_[A-Za-z0-9]+/ {match($NF,/[A-Za-z0-9]+$/,inst));
+	execute(print "INSTANCE," inst[0],$2}' OFS=,);
+
+  # Find listener processes
+	send(ps -ef|grep -v $$|awk ');
+	send(/LSNR/ || /LISTENER/ {num = NF-1; match($num,/[A-Za-z0-9]+$/,inst));
+	execute(print "LISTENER",inst[0],$2}' OFS=,);
+
+  # Print snmp process if it exists
+	execute(ps -ef|grep -v $$|awk '/dbsnmp$/ {print "DBSNMP",$NF}' OFS=, | uniq);
+};
