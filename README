@@ -1,89 +1,15 @@
-Rover version 2.02
-==================
+WARNING: This code is not ready for use!
+WARNING: Please wait for an official release.
 
-Rover is designed to provide a means of executing commands on remote
-systems.  The Rover perl module manages connections to remote servers
-and supplies an Expect object to other functions provided by extension
-modules.  One of the key advantages of Rover is that it runs many
-hosts in parallel, and keeps track of individual failures.
 
-Several modules come with Rover to extend its functionality.  Included
-with Rover are:
+Rover 3.0
 
-   Rover::Shell_Access_Routines
-   Rover::Root_Access_Routines
-   Rover::Run_Commands
-   Rover::File_Transfer
-   Rover::User_Admin
-   Rover::Password
+Entire rewrite, Rover now can be called in an OO fasion.  Also, 
+perl ithreads are used for parallel processing.  No IPC objects 
+are used anymore.
 
-This should be all one needs to connect to a remote host via ssh, telnet,
-or rlogin, get root via su or sudo, run commands, transfer files, add
-or remove users, unlock accounts, and change passwords.
+Graphical interface re-written to use Gtk2, with a new design.
 
-Rover comes with two frontend programs, rover and rovergtk.  The first,
-rover, is ran interactively from the command line.  And rovergtk uses
-the perl module Gtk to provide a graphical X user interface.
-
-Rover, and its accompanying extension modules, are 100% perl and do
-not require a C compiler to install.  However, depending on what
-pre-requisites are installed, you may need to compile a few other
-modules before installing Rover.
-
-INSTALLATION
-
-To install this module type the following:
-
-   perl Makefile.PL
-   make
-   make test (optional)
-   make install
-
-These are several options you can supply to "perl Makefile.PL":
-
-   --no-gtk            Do not install rovergtk, or check for Gtk
-                       perl module.
-   --no-deps           Do not check for dependencies, just install.
-   --install-deps      Attempt to install dependencies via CPAN.
-
-By default, "perl Makefile.PL" will check for dependencies and
-exits if any are missing.  Using --install-deps will attempt to
-install them using CPAN.  If CPAN has not been configured, you
-may be prompted to do so.
-
-DEPENDENCIES
-
-If you want to run rover you must have these perl modules:
-
-   IPC::SysV
-   IO::Pty
-   IO::Tty
-   IO::Stty
-   Expect
-
-You can simply install Bundle::Expect via CPAN to satisfy most
-of these requirements.  If your system doesnt already have
-IPC::SysV, chances are you wont be able to run Rover at all.
-
-If you wish to use the rovergtk frontend you also need:
-
-  XML::Parser  (required by Gtk to build)
-  XML::Writer  (required by Gtk to build)
-  Gtk
-
-See installation instructions if you wish to include the dependencies
-with the install of Rover.
-
-AUTHORS
-
-   Bryan A Bueter
-   Erik McLaughlin
-   Jayson A Robinson
-   John Kellner
-
-LICENCE
-
-This module can be used under the same terms as Perl.
 
 DISCLAIMER
 

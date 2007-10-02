@@ -1,0 +1,387 @@
+<?xml version="1.0" standalone="no"?> <!--*- mode: xml -*-->
+<!DOCTYPE glade-interface SYSTEM "http://glade.gnome.org/glade-2.0.dtd">
+
+<glade-interface>
+
+<widget class="GtkWindow" id="main">
+  <property name="visible">True</property>
+  <property name="title" translatable="yes">RoverGTK 3.0</property>
+  <property name="type">GTK_WINDOW_TOPLEVEL</property>
+  <property name="window_position">GTK_WIN_POS_NONE</property>
+  <property name="modal">False</property>
+  <property name="default_width">480</property>
+  <property name="default_height">320</property>
+  <property name="resizable">True</property>
+  <property name="destroy_with_parent">False</property>
+  <property name="decorated">True</property>
+  <property name="skip_taskbar_hint">False</property>
+  <property name="skip_pager_hint">False</property>
+  <property name="type_hint">GDK_WINDOW_TYPE_HINT_NORMAL</property>
+  <property name="gravity">GDK_GRAVITY_NORTH_WEST</property>
+  <property name="focus_on_map">True</property>
+  <property name="urgency_hint">False</property>
+
+  <child>
+    <widget class="GtkVBox" id="main_vbox1">
+      <property name="border_width">1</property>
+      <property name="visible">True</property>
+      <property name="homogeneous">False</property>
+      <property name="spacing">0</property>
+
+      <child>
+	<widget class="GtkMenuBar" id="main_menu">
+	  <property name="visible">True</property>
+	  <property name="pack_direction">GTK_PACK_DIRECTION_LTR</property>
+	  <property name="child_pack_direction">GTK_PACK_DIRECTION_LTR</property>
+
+	  <child>
+	    <widget class="GtkMenuItem" id="main_file_item">
+	      <property name="visible">True</property>
+	      <property name="label" translatable="yes">_File</property>
+	      <property name="use_underline">True</property>
+
+	      <child>
+		<widget class="GtkMenu" id="main_file_item_menu">
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="man_file_menu_new">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-new</property>
+		      <property name="use_stock">True</property>
+		      <signal name="activate" handler="menu_file_new" last_modification_time="Tue, 28 Aug 2007 12:42:26 GMT"/>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_file_menu_open">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-open</property>
+		      <property name="use_stock">True</property>
+		      <signal name="activate" handler="menu_file_open" last_modification_time="Tue, 28 Aug 2007 12:42:36 GMT"/>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="man_file_menu_save">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-save</property>
+		      <property name="use_stock">True</property>
+		      <signal name="activate" handler="menu_file_save" last_modification_time="Tue, 28 Aug 2007 12:42:46 GMT"/>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_file_menu_save_as">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-save-as</property>
+		      <property name="use_stock">True</property>
+		      <signal name="activate" handler="menu_file_save_as" last_modification_time="Tue, 28 Aug 2007 12:42:54 GMT"/>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkSeparatorMenuItem" id="separatormenuitem1">
+		      <property name="visible">True</property>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_file_menu_quit">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-quit</property>
+		      <property name="use_stock">True</property>
+		      <signal name="activate" handler="quit_rovergtk" last_modification_time="Fri, 24 Aug 2007 12:42:44 GMT"/>
+		    </widget>
+		  </child>
+		</widget>
+	      </child>
+	    </widget>
+	  </child>
+
+	  <child>
+	    <widget class="GtkMenuItem" id="main_edit_item">
+	      <property name="visible">True</property>
+	      <property name="label" translatable="yes">_Edit</property>
+	      <property name="use_underline">True</property>
+
+	      <child>
+		<widget class="GtkMenu" id="main_edit_item_menu">
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_edit_menu_cut">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-cut</property>
+		      <property name="use_stock">True</property>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_edit_menu_copy">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-copy</property>
+		      <property name="use_stock">True</property>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_edit_menu_paste">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-paste</property>
+		      <property name="use_stock">True</property>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkImageMenuItem" id="main_edit_menu_delete">
+		      <property name="visible">True</property>
+		      <property name="label">gtk-delete</property>
+		      <property name="use_stock">True</property>
+		    </widget>
+		  </child>
+		</widget>
+	      </child>
+	    </widget>
+	  </child>
+
+	  <child>
+	    <widget class="GtkMenuItem" id="main_hosts_item">
+	      <property name="visible">True</property>
+	      <property name="label" translatable="yes">_Hosts</property>
+	      <property name="use_underline">True</property>
+
+	      <child>
+		<widget class="GtkMenu" id="main_hosts_item_menu">
+
+		  <child>
+		    <widget class="GtkMenuItem" id="main_hosts_menu_edit">
+		      <property name="visible">True</property>
+		      <property name="label" translatable="yes">_Edit</property>
+		      <property name="use_underline">True</property>
+		    </widget>
+		  </child>
+
+		  <child>
+		    <widget class="GtkMenuItem" id="main_hosts_menu_delete">
+		      <property name="visible">True</property>
+		      <property name="label" translatable="yes">_Delete</property>
+		      <property name="use_underline">True</property>
+		    </widget>
+		  </child>
+		</widget>
+	      </child>
+	    </widget>
+	  </child>
+
+	  <child>
+	    <widget class="GtkMenuItem" id="main_help_item">
+	      <property name="visible">True</property>
+	      <property name="label" translatable="yes">_Help</property>
+	      <property name="use_underline">True</property>
+
+	      <child>
+		<widget class="GtkMenu" id="main_help_item_menu">
+
+		  <child>
+		    <widget class="GtkMenuItem" id="main_help_menu_about">
+		      <property name="visible">True</property>
+		      <property name="label" translatable="yes">_About</property>
+		      <property name="use_underline">True</property>
+		      <signal name="activate" handler="about_rovergtk" last_modification_time="Fri, 24 Aug 2007 12:41:19 GMT"/>
+		    </widget>
+		  </child>
+		</widget>
+	      </child>
+	    </widget>
+	  </child>
+	</widget>
+	<packing>
+	  <property name="padding">0</property>
+	  <property name="expand">False</property>
+	  <property name="fill">False</property>
+	</packing>
+      </child>
+
+      <child>
+	<widget class="GtkScrolledWindow" id="scrolledwindow1">
+	  <property name="visible">True</property>
+	  <property name="can_focus">True</property>
+	  <property name="hscrollbar_policy">GTK_POLICY_ALWAYS</property>
+	  <property name="vscrollbar_policy">GTK_POLICY_ALWAYS</property>
+	  <property name="shadow_type">GTK_SHADOW_NONE</property>
+	  <property name="window_placement">GTK_CORNER_TOP_LEFT</property>
+
+	  <child>
+	    <widget class="GtkTreeView" id="main_hosts_view">
+	      <property name="visible">True</property>
+	      <property name="can_focus">True</property>
+	      <property name="headers_visible">True</property>
+	      <property name="rules_hint">False</property>
+	      <property name="reorderable">False</property>
+	      <property name="enable_search">True</property>
+	      <property name="fixed_height_mode">False</property>
+	      <property name="hover_selection">False</property>
+	      <property name="hover_expand">False</property>
+	    </widget>
+	  </child>
+	</widget>
+	<packing>
+	  <property name="padding">0</property>
+	  <property name="expand">True</property>
+	  <property name="fill">True</property>
+	</packing>
+      </child>
+
+      <child>
+	<widget class="GtkHBox" id="main_hbox1">
+	  <property name="border_width">5</property>
+	  <property name="visible">True</property>
+	  <property name="homogeneous">False</property>
+	  <property name="spacing">0</property>
+
+	  <child>
+	    <widget class="GtkHBox" id="main_hbox2">
+	      <property name="visible">True</property>
+	      <property name="homogeneous">False</property>
+	      <property name="spacing">0</property>
+
+	      <child>
+		<widget class="GtkLabel" id="main_filter_label">
+		  <property name="visible">True</property>
+		  <property name="label" translatable="yes">Filter</property>
+		  <property name="use_underline">False</property>
+		  <property name="use_markup">False</property>
+		  <property name="justify">GTK_JUSTIFY_LEFT</property>
+		  <property name="wrap">False</property>
+		  <property name="selectable">False</property>
+		  <property name="xalign">0.5</property>
+		  <property name="yalign">0.5</property>
+		  <property name="xpad">0</property>
+		  <property name="ypad">0</property>
+		  <property name="ellipsize">PANGO_ELLIPSIZE_NONE</property>
+		  <property name="width_chars">-1</property>
+		  <property name="single_line_mode">False</property>
+		  <property name="angle">0</property>
+		</widget>
+		<packing>
+		  <property name="padding">0</property>
+		  <property name="expand">False</property>
+		  <property name="fill">False</property>
+		</packing>
+	      </child>
+
+	      <child>
+		<widget class="GtkEntry" id="main_filter_entry">
+		  <property name="width_request">125</property>
+		  <property name="visible">True</property>
+		  <property name="can_focus">True</property>
+		  <property name="editable">True</property>
+		  <property name="visibility">True</property>
+		  <property name="max_length">0</property>
+		  <property name="text" translatable="yes"></property>
+		  <property name="has_frame">True</property>
+		  <property name="invisible_char">*</property>
+		  <property name="activates_default">False</property>
+		</widget>
+		<packing>
+		  <property name="padding">0</property>
+		  <property name="expand">True</property>
+		  <property name="fill">True</property>
+		</packing>
+	      </child>
+
+	      <child>
+		<widget class="GtkButton" id="mail_filter_button_go">
+		  <property name="visible">True</property>
+		  <property name="can_focus">True</property>
+		  <property name="label" translatable="yes">Go</property>
+		  <property name="use_underline">True</property>
+		  <property name="relief">GTK_RELIEF_NORMAL</property>
+		  <property name="focus_on_click">True</property>
+		</widget>
+		<packing>
+		  <property name="padding">0</property>
+		  <property name="expand">False</property>
+		  <property name="fill">False</property>
+		</packing>
+	      </child>
+	    </widget>
+	    <packing>
+	      <property name="padding">0</property>
+	      <property name="expand">True</property>
+	      <property name="fill">True</property>
+	    </packing>
+	  </child>
+
+	  <child>
+	    <widget class="GtkVSeparator" id="vseparator1">
+	      <property name="visible">True</property>
+	    </widget>
+	    <packing>
+	      <property name="padding">0</property>
+	      <property name="expand">True</property>
+	      <property name="fill">True</property>
+	    </packing>
+	  </child>
+
+	  <child>
+	    <widget class="GtkHButtonBox" id="main_bbox1">
+	      <property name="visible">True</property>
+	      <property name="layout_style">GTK_BUTTONBOX_SPREAD</property>
+	      <property name="spacing">0</property>
+
+	      <child>
+		<widget class="GtkButton" id="main_button_run">
+		  <property name="visible">True</property>
+		  <property name="can_default">True</property>
+		  <property name="can_focus">True</property>
+		  <property name="label" translatable="yes">Run</property>
+		  <property name="use_underline">True</property>
+		  <property name="relief">GTK_RELIEF_NORMAL</property>
+		  <property name="focus_on_click">True</property>
+		</widget>
+	      </child>
+
+	      <child>
+		<widget class="GtkButton" id="main_button_clear">
+		  <property name="visible">True</property>
+		  <property name="can_default">True</property>
+		  <property name="can_focus">True</property>
+		  <property name="label" translatable="yes">Clear</property>
+		  <property name="use_underline">True</property>
+		  <property name="relief">GTK_RELIEF_NORMAL</property>
+		  <property name="focus_on_click">True</property>
+		  <signal name="clicked" handler="new_config" last_modification_time="Fri, 24 Aug 2007 12:58:22 GMT"/>
+		</widget>
+	      </child>
+
+	      <child>
+		<widget class="GtkButton" id="main_button_quit">
+		  <property name="visible">True</property>
+		  <property name="can_default">True</property>
+		  <property name="can_focus">True</property>
+		  <property name="label" translatable="yes">Quit</property>
+		  <property name="use_underline">True</property>
+		  <property name="relief">GTK_RELIEF_NORMAL</property>
+		  <property name="focus_on_click">True</property>
+		  <signal name="clicked" handler="quit_rovergtk" last_modification_time="Fri, 24 Aug 2007 13:37:19 GMT"/>
+		</widget>
+	      </child>
+	    </widget>
+	    <packing>
+	      <property name="padding">0</property>
+	      <property name="expand">True</property>
+	      <property name="fill">True</property>
+	    </packing>
+	  </child>
+	</widget>
+	<packing>
+	  <property name="padding">0</property>
+	  <property name="expand">False</property>
+	  <property name="fill">True</property>
+	</packing>
+      </child>
+    </widget>
+  </child>
+</widget>
+
+</glade-interface>

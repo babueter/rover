@@ -1,3 +1,13 @@
+3.00
+----
+Entire rewrite, Rover now can be called in an OO fasion.  Also, perl ithreads are
+used for parallel processing.  No IPC objects are used anymore.
+
+
+2.03
+----
+* bugfix: 1592171: User_Admin commands all fail
+
 2.02
 ----
 * bugfix: 1518741: File_Transfer not thread safe
