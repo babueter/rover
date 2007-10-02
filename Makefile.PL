@@ -8,6 +8,7 @@ use warnings;
 
 # Dependent perl modules needed to run
 #
+die "\nInstaller not yet complete, please install by hand\n\n";
 my @dependencies = ("IO::Pty", "IO::Tty", "IO::Stty", "Expect", "IPC::SysV");
 
 my $use_gtk = 1;
