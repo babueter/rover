@@ -1,7 +1,8 @@
 3.00
 ----
-Entire rewrite, Rover now can be called in an OO fasion.  Also, perl ithreads are
-used for parallel processing.  No IPC objects are used anymore.
+Entire rewrite, Rover now can be called in an OO fasion.  Also, perl ithreads
+are used for parallel processing.  No IPC objects are used anymore.  Gtk2 now
+used instead of gtk.
 
 
 2.03

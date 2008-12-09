@@ -1,4 +1,4 @@
-#!/usr/bin/perl -I/home/bbueter/labroom/rover3-beta/lib
+#!perl
 #
 # Promgram:    RoverGtk
 # Author:      Bryan Bueter
@@ -6,50 +6,61 @@
 # Description: Graphical user interface for Rover
 
 use strict;
-use Rover;
+use Data::Dumper;
 
-use Gtk2;
+use Rover;
+use Config;
+
+use Gtk2 qw/-init -threads-init/;
 use Gtk2::GladeXML;
 use Gtk2::SimpleList;
+use Gtk2::Helper;
+use Glib qw/TRUE FALSE/;
+
+die "Glib::Object thread safety failed\n"
+	unless Glib::Object->set_threadsafe(TRUE);
 
 use POSIX;
 use Carp;
+use Storable qw/dclone/;
 
-our $false = 0;
-our $true = 1;
+use Getopt::Long qw( :config no_ignore_case bundling );
+
+#######################################################################
+# Redefine Rover pinfo function
+#
+no warnings qw/redefine/;
+sub Rover::pinfo {
+  my $self = shift;
+  my $hostname = shift;
+  my $message = shift;
+
+  chomp $message;
+  $message =~ s/:/ /g ;
+  print "$hostname:$message\n";
+}
 
 #######################################################################
 # Create Rover object and populate data
 #
 my $rover = new Rover;
-
-### TEST ###
-my @hosts = ("jupiter", "europa", "ravager", "epslad04");
-$rover->add_host(@hosts);
-foreach my $host ( $rover->host_info() ) {
-  my $host_info = $rover->host_info($host);
-  $host_info->login_methods("shell_by_ssh");
+my $rover_config_file = $rover->config_file();
+my $getopts_result = GetOptions("config-file=s" => \$rover_config_file);
+if ( ! $getopts_result ) {
+  print "Usages: $0 [--config-file <filename>]\n";
+  exit (0);
 }
-
-my $ruleset1 = $rover->rulesets("Uptime");
-$ruleset1->add("execute", "uptime");
-my $ruleset2 = $rover->rulesets("User Info");
-$ruleset2->add("execute", "who");
-my $ruleset3 = $rover->rulesets("Process Info");
-$ruleset3->add("execute", "ps -ef");
-### TEST ###
-
+$rover->config_file($rover_config_file);
+$rover->load();
 
 #######################################################################
 # Import glade XML and connect perl objects
 #
-Gtk2->init;
-our $gladexml_main = Gtk2::GladeXML->new("./rovergtk_main.glade");
-$gladexml_main->signal_autoconnect_from_package('main');
+our $gladexml_main = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "main");
+$gladexml_main->signal_autoconnect_from_package();
 
 my $main = $gladexml_main->get_widget("main");
-$main->signal_connect("delete_event", sub { Gtk2->main_quit; });
-
+$main->signal_connect("delete_event" => sub { Gtk2->main_quit; });
 
 # Main hosts view window
 #
@@ -59,48 +70,286 @@ my $main_hosts_slist = Gtk2::SimpleList->new_from_treeview($main_hosts_view,
 	'OS' => 'text',
 	'Description' => 'text', );
 
-foreach my $host ( $rover->host_info() ) {
-  my $host_info = $rover->host_info($host) ;
-  push @{$main_hosts_slist->{data}}, [ $host, $host_info->os, $host_info->description ];
+$main_hosts_slist->get_column(0)->set_sort_column_id(0);
+$main_hosts_slist->get_column(1)->set_sort_column_id(1);
+$main_hosts_slist->get_column(2)->set_sort_column_id(2);
+$main_hosts_slist->get_model()->set_sort_func(0,\&slist_sort_by_column);
+
+foreach my $host ( sort $rover->host() ) {
+  my $host_obj = $rover->host($host) ;
+  push @{$main_hosts_slist->{data}}, [ $host, $host_obj->os, $host_obj->description ];
 }
 $main_hosts_slist->signal_connect("row_activated" => \&host_edit_window, $rover);
 
-
-# Misc. signals that need objects passed
+# Main rulesets window, and preview window
 #
+my $main_rulesets_view = $gladexml_main->get_widget("main_rulesets_view");
+my $main_rulesets_slist = Gtk2::SimpleList->new_from_treeview($main_rulesets_view,
+	'Ruleset' => 'text',
+	'Description' => 'text', );
+
+$main_rulesets_slist->get_column(0)->set_sort_column_id(0);
+$main_rulesets_slist->get_model()->set_sort_func(0,\&slist_sort_by_column);
+
+foreach my $ruleset ( sort $rover->ruleset() ) {
+  my $ruleset_obj = $rover->ruleset($ruleset);
+  push @{$main_rulesets_slist->{data}}, [ $ruleset, $ruleset_obj->description ];
+}
+my $main_rulesets_preview_view = $gladexml_main->get_widget("main_rulesets_preview_view");
+my $main_rulesets_preview_slist = Gtk2::SimpleList->new_from_treeview($main_rulesets_preview_view,
+	'Ruleset Preview' => 'text', );
+$main_rulesets_preview_slist->get_selection->unselect_all();
+$main_rulesets_preview_slist->get_selection->set_mode('none');
+
+my $main_rulesets_slist_sub = sub {
+	my ($widget, $data) = @_;
+
+	my $main_rulesets_preview_slist = $data->[0];
+	my $rover = $data->[1];
+
+	if ( ! $widget->get_selected_indices ) {
+	  $main_rulesets_preview_slist->parent->hide_all();
+	} else {
+	  my @selection = $widget->get_selected_indices;
+	  my $ruleset = $widget->{data}[$selection[0]][0];
+	  my $ruleset_obj = $rover->ruleset($ruleset);
+
+	  @{$main_rulesets_preview_slist->{data}} = ();
+	  foreach my $rule ( $ruleset_obj->list() ) {
+	    push @{$main_rulesets_preview_slist->{data}}, [$rule];
+	  }
+	  $main_rulesets_preview_slist->parent->show_all();
+	}
+};
+$main_rulesets_slist->signal_connect("unselect-all" => $main_rulesets_slist_sub, [$main_rulesets_preview_slist, $rover]);
+$main_rulesets_slist->signal_connect("cursor-changed" => $main_rulesets_slist_sub, [$main_rulesets_preview_slist, $rover]);
+$main_rulesets_slist->signal_connect("row_activated" => \&ruleset_edit_window, [$rover, $main_rulesets_preview_slist]);
+
+# File menu options
+#
+my $main_file_menu_new = $gladexml_main->get_widget("main_file_menu_new");
+$main_file_menu_new->signal_connect("activate" => \&menu_file_new, $rover);
+
+my $main_file_menu_open = $gladexml_main->get_widget("main_file_menu_open");
+$main_file_menu_open->signal_connect("activate" => \&menu_file_open, $rover);
+
+my $main_file_menu_save = $gladexml_main->get_widget("main_file_menu_save");
+$main_file_menu_save->signal_connect("activate" => \&menu_file_save, $rover);
+
+my $main_file_menu_save_as = $gladexml_main->get_widget("main_file_menu_save_as");
+$main_file_menu_save_as->signal_connect("activate" => \&menu_file_save_as, $rover);
+
+# Hosts menu options
+#
+my $main_hosts_menu_new = $gladexml_main->get_widget("main_hosts_menu_new");
+$main_hosts_menu_new->signal_connect("activate" => \&menu_hosts_new, [ $main_hosts_slist, $rover ]);
+
 my $main_hosts_menu_delete = $gladexml_main->get_widget("main_hosts_menu_delete");
 $main_hosts_menu_delete->signal_connect("activate" => \&menu_hosts_delete, [ $main_hosts_slist, $rover ]);
 
 my $main_hosts_menu_edit = $gladexml_main->get_widget("main_hosts_menu_edit");
 $main_hosts_menu_edit->signal_connect("activate" => \&menu_hosts_edit, [ $main_hosts_slist, $rover ]);
 
+# Ruleset menu options
+#
+my $main_ruleset_menu_new = $gladexml_main->get_widget("main_ruleset_menu_new");
+$main_ruleset_menu_new->signal_connect("activate" => \&menu_ruleset_new, [ $main_rulesets_slist, $main_rulesets_preview_slist, $rover ]);
+
+my $main_ruleset_menu_delete = $gladexml_main->get_widget("main_ruleset_menu_delete");
+$main_ruleset_menu_delete->signal_connect("activate" => \&menu_ruleset_delete, [ $main_rulesets_slist, $main_rulesets_preview_slist, $rover ]);
+
+my $main_ruleset_menu_edit = $gladexml_main->get_widget("main_ruleset_menu_edit");
+$main_ruleset_menu_edit->signal_connect("activate" => \&menu_ruleset_edit, [ $main_rulesets_slist, $main_rulesets_preview_slist, $rover ]);
+
+# Help menu options
+#
+my $main_help_menu_rover = $gladexml_main->get_widget("main_help_menu_rover");
+my $main_help_menu_hosts = $gladexml_main->get_widget("main_help_menu_hosts");
+my $main_help_menu_rulesets = $gladexml_main->get_widget("main_help_menu_rulesets");
+$main_help_menu_rover->signal_connect("activate" => \&help_window, "Rover");
+$main_help_menu_hosts->signal_connect("activate" => \&help_window, "Rover::Host");
+$main_help_menu_rulesets->signal_connect("activate" => \&help_window, "Rover::Ruleset");
+
+
+# Main menu button signals
+#
 my $main_button_run = $gladexml_main->get_widget("main_button_run");
 $main_button_run->signal_connect("clicked" => \&run_rover, $rover);
-
 
 # Start main Gtk2 loop
 #
 $main->show_all();
+
+# Hide some stuff
+#
+$main_rulesets_preview_slist->parent->hide_all();
+
 Gtk2->main;
+
 
 #######################################################################
 # Main menu routines
 #
-
 sub menu_file_new {
+# Open a brand new rover configuration, clear all data from the gui windows
+#
+  my ($widget, $rover) = @_;
 
+  $rover->clear();
+  @{$main_hosts_slist->{data}} = ();
+  @{$main_rulesets_slist->{data}} = ();
+  $main_rulesets_preview_slist->parent->hide_all();
 }
 
 sub menu_file_open {
+# Load a rover configuration from file, update the gui
+#
+  my ($widget, $rover) = @_;
 
+  my $save_as_file_chooser = Gtk2::FileChooserDialog->new("Rover Config Save As", undef, "open",
+	"gtk-cancel" => "cancel",
+	"gtk-open" => "accept", );
+  $save_as_file_chooser->set_show_hidden(TRUE);
+  my $response = $save_as_file_chooser->run;
+  if ( $response eq "accept" ) {
+    my $filename = $save_as_file_chooser->get_filename();
+    $rover->clear();
+    $rover->config_file($filename);
+    $rover->load();
+  }
+  $save_as_file_chooser->destroy();
+
+  @{$main_hosts_slist->{data}} = ();
+  foreach my $host ( sort $rover->host() ) {
+    my $host_obj = $rover->host($host) ;
+    push @{$main_hosts_slist->{data}}, [ $host, $host_obj->os, $host_obj->description ];
+  }
+  @{$main_rulesets_slist->{data}} = ();
+  foreach my $ruleset ( sort $rover->ruleset() ) {
+    my $ruleset_obj = $rover->ruleset($ruleset);
+    push @{$main_rulesets_slist->{data}}, [ $ruleset, $ruleset_obj->description() ];
+  }
 }
 
 sub menu_file_save {
+# Save current settings to current config file
+#
+  my ($widget, $rover) = @_;
 
+  $rover->save();
 }
 
 sub menu_file_save_as {
+# Save current settings to an alternative file
+#
+  my ($widget, $rover) = @_;
 
+  my $save_as_file_chooser = Gtk2::FileChooserDialog->new("Rover Config Save As", undef, "open",
+	"gtk-cancel" => "cancel",
+	"gtk-open" => "accept", );
+  $save_as_file_chooser->set_do_overwrite_confirmation(TRUE);
+  $save_as_file_chooser->set_show_hidden(TRUE);
+  my $response = $save_as_file_chooser->run;
+  if ( $response eq "accept" ) {
+    my $filename = $save_as_file_chooser->get_filename();
+    $rover->config_file($filename);
+    $rover->save();
+  }
+  $save_as_file_chooser->destroy();
+
+}
+
+sub menu_hosts_new {
+# Display a host entry window and add hosts to rover and the host list window
+#
+  my ($widget, $data) = @_;
+
+  my $slist = $data->[0];
+  my $rover = $data->[1];
+
+  my $gladexml = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "host_edit");
+  $gladexml->signal_autoconnect_from_package();
+
+  my $host_edit = $gladexml->get_widget("host_edit");
+  my $host_edit_cancel = $gladexml->get_widget("host_edit_cancel");
+  my $host_edit_ok = $gladexml->get_widget("host_edit_ok");
+
+  $host_edit->set_default($host_edit_ok);
+  my $activate_sub = sub {
+	my ($widget, $data) = @_;
+
+	my $host_edit = $data->[0];
+	my $slist = $data->[1];
+	my $rover = $data->[2];
+	my $gladexml = $data->[3];
+
+	my $host_edit_hostname = $gladexml->get_widget("host_edit_hostname");
+	my $host_edit_os = $gladexml->get_widget("host_edit_os");
+	my $host_edit_description = $gladexml->get_widget("host_edit_description");
+	my $host_edit_username = $gladexml->get_widget("host_edit_username");
+
+	my $hostname = $host_edit_hostname->get_text();
+	if ( ! $hostname ) {
+	  my $dialog = Gtk2::Dialog->new("Error: Undefined Hostname", undef,
+		[qw/modal destroy-with-parent/],
+		'gtk-ok' => 'none'
+	  );
+	  my $dialog_label = Gtk2::Label->new("You must specify a hostname.");
+	  $dialog->vbox->add($dialog_label);
+	  $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy;});
+	  $dialog->set_modal(TRUE);
+	  $dialog->show_all;
+	  return;
+	} elsif ( $rover->host($hostname) ) {
+	  my $dialog = Gtk2::Dialog->new("Error: Hostname Exists", undef,
+		[qw/destroy-with-parent/],
+		'gtk-ok' => 'none'
+	  );
+	  my $dialog_label = Gtk2::Label->new("You must specify a unique hostname.");
+	  $dialog->vbox->add($dialog_label);
+	  $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy;});
+	  $dialog->set_modal(TRUE);
+	  $dialog->show_all;
+	  return;
+	} else {
+	  if ( ! $rover->add_hosts($hostname) ) {
+	    my $dialog = Gtk2::Dialog->new("Error: Hostname not Allowed", undef,
+		[qw/destroy-with-parent/],
+		'gtk-ok' => 'none'
+	    );
+	    my $dialog_label = Gtk2::Label->new("Please check hostname and try again.");
+	    $dialog->vbox->add($dialog_label);
+	    $dialog->signal_connect("response" => sub {
+		my ($widget, $host_edit) = @_;
+		$widget->destroy;
+	    },);
+
+	    $dialog->set_modal(TRUE);
+	    $dialog->show_all;
+	    return;
+	  }
+	  my $host_obj = $rover->host($host_edit_hostname->get_text());
+	  $host_obj->os( $host_edit_os->get_text() ) if $host_edit_os->get_text();
+	  $host_obj->description( $host_edit_description->get_text() ) if $host_edit_description->get_text();
+	  $host_obj->username( $host_edit_username->get_text() ) if $host_edit_username->get_text();
+
+	  push @{$slist->{data}}, [$host_edit_hostname->get_text(), $host_obj->os(), $host_obj->description()];
+	  $host_edit_hostname->set_text("");
+	  $host_edit_os->set_text("");
+	  $host_edit_description->set_text("");
+	}
+  };
+  $host_edit_ok->has_default(TRUE);
+  $host_edit_ok->signal_connect("clicked" => $activate_sub, [ $host_edit, $slist, $rover, $gladexml ]);
+
+  $host_edit_cancel->signal_connect("clicked" => sub {
+        my ($widget, $host_edit) = @_;
+
+        $host_edit->destroy();
+  }, $host_edit);
+
+  $host_edit->set_title("Add Host");
+  $host_edit->show_all;
 }
 
 sub menu_hosts_edit {
@@ -111,7 +360,7 @@ sub menu_hosts_edit {
 
   my $tree_selection = $main_hosts_slist->get_selection;
   my $tree_path = $tree_selection->get_selected_rows;
-  host_edit_window($main_hosts_slist, $tree_path, NULL, $rover);
+  host_edit_window($main_hosts_slist, $tree_path, undef, $rover);
 }
 
 sub menu_hosts_delete {
@@ -124,11 +373,7 @@ sub menu_hosts_delete {
   my $host_name = $main_hosts_slist->{data}[$selection[0]][0];
 
   splice @{$main_hosts_slist->{data}}, $selection[0], 1;
-  my $count = $rover->del_host($host_name);
-}
-
-sub about_rovergtk {
-
+  my $count = $rover->del_hosts($host_name);
 }
 
 #######################################################################
@@ -137,7 +382,8 @@ sub about_rovergtk {
 sub host_edit_window {
   my ($slist, $path, $column, $rover) = @_;
 
-  my $gladexml = Gtk2::GladeXML->new("./rovergtk_hosts.glade");
+  my $gladexml = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "host_edit");
+  $gladexml->signal_autoconnect_from_package();
 
   my $host_edit = $gladexml->get_widget("host_edit");
   my $host_edit_cancel = $gladexml->get_widget("host_edit_cancel");
@@ -158,23 +404,22 @@ sub host_edit_window {
 	my $host_edit_description = $gladexml->get_widget("host_edit_description");
 	my $host_edit_username = $gladexml->get_widget("host_edit_username");
 
-	my $host_info = $rover->host_info($host_edit_hostname->get_text());
-	$host_info->os( $host_edit_os->get_text() );
-	$host_info->description( $host_edit_description->get_text() );
-	$host_info->username( $host_edit_username->get_text() );
+	my $host_obj = $rover->host($host_edit_hostname->get_text());
+	$host_obj->os( $host_edit_os->get_text() );
+	$host_obj->description( $host_edit_description->get_text() );
+	$host_obj->username( $host_edit_username->get_text() );
 
-	$host_edit->hide_all();
+	$host_edit->destroy();
 
 	@{$slist->{data}} = ();
-	foreach my $host ( $rover->host_info() ) {
-	  my $host_info = $rover->host_info($host) ;
-	  push @{$slist->{data}}, [ $host, $host_info->os, $host_info->description ];
+	foreach my $host ( sort $rover->host() ) {
+	  my $host_obj = $rover->host($host) ;
+	  push @{$slist->{data}}, [ $host, $host_obj->os, $host_obj->description ];
 	}
 
   };
-  $host_edit_ok->has_default($true);
+  $host_edit_ok->has_default(TRUE);
   $host_edit_ok->signal_connect("clicked" => $activate_sub, [ $host_edit, $slist, $rover, $gladexml ]);
-  $host_edit_ok->signal_connect("activate" => $activate_sub, [ $host_edit, $slist, $rover, $gladexml ]);
 
   $host_edit_cancel->signal_connect("clicked" => sub {
 	my ($widget, $host_edit) = @_;
@@ -184,28 +429,260 @@ sub host_edit_window {
 
   my $row_ref = $slist->get_row_data_from_path($path);
   my $hostname = $row_ref->[0];
-  my $host_info = $rover->host_info($hostname);
+  my $host_obj = $rover->host($hostname);
 
   my $host_edit_hostname = $gladexml->get_widget("host_edit_hostname");
   my $host_edit_os = $gladexml->get_widget("host_edit_os");
   my $host_edit_description = $gladexml->get_widget("host_edit_description");
   my $host_edit_username = $gladexml->get_widget("host_edit_username");
 
-  $host_edit_hostname->set_text($host_info->hostname);
-  $host_edit_os->set_text($host_info->os);
-  $host_edit_description->set_text($host_info->description);
-  $host_edit_username->set_text($host_info->username);
+  $host_edit_hostname->set_text($host_obj->hostname);
+  $host_edit_os->set_text($host_obj->os);
+  $host_edit_description->set_text($host_obj->description) if $host_obj->description;
+  $host_edit_username->set_text($host_obj->username);
 
-  $host_edit->set_title("Modify $hostname");
+  $host_edit->set_title("Modify Host: $hostname");
+  $host_edit->set_modal(TRUE);
   $host_edit->show_all;
 }
 
 #######################################################################
-# Add new host entry
+# Edit the ruleset from the main window
 #
-sub host_new_window {
-  my $gladexml = Gtk2::GladeXML->new("./rovergtk_hosts.glade");
+sub ruleset_edit_window {
+  my ($slist, $path, $column, $data) = @_;
 
+  my $rover = $data->[0];
+  my $main_rulesets_preview_slist = $data->[1];
+
+  $slist->get_selection->unselect_all;
+  $main_rulesets_preview_slist->parent->hide_all(); # workaround for broken unselect_all signal
+
+  my $gladexml = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "ruleset_edit");
+  $gladexml->signal_autoconnect_from_package();
+
+  my $ruleset_menu_save = $gladexml->get_widget("ruleset_menu_save");
+  my $ruleset_menu_close = $gladexml->get_widget("ruleset_menu_close");
+
+  my $ruleset_edit = $gladexml->get_widget("ruleset_edit");
+  my $ruleset_close = $gladexml->get_widget("ruleset_close");
+  my $ruleset_save = $gladexml->get_widget("ruleset_save");
+  my $ruleset_runon = $gladexml->get_widget("ruleset_runon");
+
+  my $ruleset_rule_param = $gladexml->get_widget("ruleset_rule_param");
+  my $ruleset_rule_add = $gladexml->get_widget("ruleset_rule_add");
+  my $ruleset_rule_delete = $gladexml->get_widget("ruleset_rule_delete");
+  my $ruleset_rule_clear = $gladexml->get_widget("ruleset_rule_clear");
+
+ # Configure the rules combo box
+ #
+  my $ruleset_rule_combo = $gladexml->get_widget("ruleset_rule");
+  my $ruleset_rule_combo_model = Gtk2::ListStore->new ('Glib::String');
+  my $ruleset_rule_combo_renderer = Gtk2::CellRendererText->new;
+  $ruleset_rule_combo->set_model($ruleset_rule_combo_model);
+  $ruleset_rule_combo->pack_start($ruleset_rule_combo_renderer, TRUE);
+  $ruleset_rule_combo->add_attribute($ruleset_rule_combo_renderer, text => 0);
+
+ # Set up the rules list window
+ #
+  my $ruleset_rule_view = $gladexml->get_widget("ruleset_rule_view");
+  my $ruleset_rule_slist = Gtk2::SimpleList->new_from_treeview($ruleset_rule_view,
+	'Rule' => 'text',
+	'Parameter' => 'text' );
+  $ruleset_rule_slist->set_column_editable(1,TRUE);
+  $ruleset_rule_slist->set_reorderable(TRUE);
+
+  my $row_ref = $slist->get_row_data_from_path($path);
+  my $ruleset_name = $row_ref->[0];
+  my $ruleset = $rover->ruleset($ruleset_name);
+
+  my @ruleset_commands = $ruleset->commands();
+  foreach my $command (@ruleset_commands) {
+    push (@{ $ruleset_rule_slist->{data} }, [ $command->[0], $command->[1] ]);
+  }
+
+ # Populate the Rules window with the current rules list
+ #
+  my @registered_modules = $rover->registered_modules();
+  my @registered_rules = ();
+  foreach my $module (@registered_modules) {
+    push (@registered_rules, $rover->registered_rules($module));
+  }
+  #foreach my $rule ( sort {$a cmp $b} @registered_rules ) {
+  foreach my $rule ( @registered_rules ) {
+    $ruleset_rule_combo->append_text($rule);
+  }
+  $ruleset_rule_combo->set_active(0);
+
+ # Configure ruleset add/delete/clear buttons and actions
+ #
+  $ruleset_edit->set_default($ruleset_rule_add);
+  $ruleset_rule_add->has_default(TRUE);
+  $ruleset_rule_param->set_activates_default(TRUE);
+
+  $ruleset_rule_add->signal_connect("clicked" => sub {
+	my ($widget, $data) = @_;
+
+	my $ruleset_rule_combo = $data->[0];
+	my $ruleset_rule_param = $data->[1];
+	my $ruleset_rule_slist = $data->[2];
+
+	my $rule = $ruleset_rule_combo->get_active_text;
+	my $param = $ruleset_rule_param->get_text;
+	if ( $param eq "" ) { return 1; }
+
+	push(@{$ruleset_rule_slist->{data}}, [$rule, $param]);
+	$ruleset_rule_param->set_text("");
+
+  }, [$ruleset_rule_combo, $ruleset_rule_param, $ruleset_rule_slist] );
+
+  $ruleset_rule_delete->signal_connect("clicked" => sub {
+	my ($widget, $ruleset_rule_slist) = @_;
+
+	my @selection = $ruleset_rule_slist->get_selected_indices;
+	if ( ! @selection ) { return 1; }
+
+	splice @{$ruleset_rule_slist->{data}}, $selection[0], 1;
+
+  }, $ruleset_rule_slist);
+
+  $ruleset_rule_clear->signal_connect("clicked" => sub {
+	my ($widget, $ruleset_rule_slist) = @_;
+
+	@{$ruleset_rule_slist->{data}} = ();
+  }, $ruleset_rule_slist);
+
+  my $ruleset_name_entry = $gladexml->get_widget("ruleset_name");
+  $ruleset_name_entry->set_text($ruleset_name);
+  $ruleset_name_entry->set_editable(FALSE);
+
+  my $ruleset_description_entry = $gladexml->get_widget("ruleset_description");
+  $ruleset_description_entry->set_text($ruleset->description);
+
+ # Configure bottom row buttons and actions
+ #
+  my $ruleset_save_sub = sub {
+	my ($widget, $data) = @_;
+
+	my $main_row_ref = $data->[0];
+	my $rover = $data->[1];
+	my $ruleset_description_entry = $data->[2];
+	my $ruleset_rule_slist = $data->[3];
+
+	my $ruleset_name = $main_row_ref->[0];
+	$ruleset = $rover->ruleset($ruleset_name);
+
+	$ruleset->clear();
+	foreach my $row_ref ( @{$ruleset_rule_slist->{data}} ) {
+	  $ruleset->add($row_ref->[0], $row_ref->[1]);
+	}
+	$ruleset->description($ruleset_description_entry->get_text());
+	$main_row_ref->[1] = $ruleset_description_entry->get_text();
+
+  };
+  $ruleset_save->signal_connect("clicked" => $ruleset_save_sub, [$row_ref, $rover, $ruleset_description_entry, $ruleset_rule_slist] );
+  $ruleset_menu_save->signal_connect("activate" => $ruleset_save_sub, [$row_ref, $rover, $ruleset_description_entry, $ruleset_rule_slist] );
+
+  $ruleset_close->signal_connect("clicked" => sub {
+	my ($widget, $ruleset_edit) = @_;
+
+	$ruleset_edit->destroy();
+  }, $ruleset_edit);
+
+  $ruleset_menu_close->signal_connect("activate" => sub {
+	my ($widget, $ruleset_edit) = @_;
+
+	$ruleset_edit->destroy();
+  }, $ruleset_edit);
+
+ # Configure the Help menu window
+ #
+  my $ruleset_menu_help_menu = $gladexml->get_widget("ruleset_menu_help_menu");
+  foreach my $module ( $rover->registered_modules ) {
+    my $module_menu_item = Gtk2::MenuItem->new($module);
+
+    $module_menu_item->signal_connect("activate" => \&help_window, $module);
+    $module_menu_item->show();
+
+    $ruleset_menu_help_menu->prepend($module_menu_item);
+  }
+
+  $ruleset_edit->set_title("Modify Ruleset: $ruleset_name");
+  $ruleset_edit->set_modal(TRUE);
+  $ruleset_edit->show_all;
+}
+
+sub menu_ruleset_new {
+  my ($widget, $data) = @_;
+
+  my $slist = $data->[0];
+  my $ruleset_preview_window = $data->[1];
+  my $rover = $data->[2];
+
+  my $dialog = Gtk2::Dialog->new("New Ruleset", undef,
+	[qw/modal destroy-with-parent/],
+	'gtk-ok' => 'ok',
+	'gtk-cancel' => 'cancel',
+  );
+  my $hbox = Gtk2::HBox->new(0,5);
+  $dialog->vbox->add($hbox);
+
+  my $ruleset_label = Gtk2::Label->new("Ruleset Name:");
+  my $ruleset_entry = Gtk2::Entry->new;
+
+  $hbox->pack_start($ruleset_label, 0, 0, 0);
+  $hbox->pack_start($ruleset_entry, 1, 1, 0);
+
+  $dialog->set_modal(TRUE);
+  $dialog->show_all;
+
+  my $response = $dialog->run;
+  while ($response eq 'ok' && ! $ruleset_entry->get_text) {
+    $response = $dialog->run;
+  }
+
+  if ($response eq 'ok') {
+    my $ruleset_name = $ruleset_entry->get_text;
+    push (@{$slist->{data}}, [$ruleset_name, ""]);
+
+    $rover->add_rulesets($ruleset_name);
+
+    $slist->select( @{$slist->{data}} - 1 );
+    my $tree_selection = $slist->get_selection;
+    my $tree_path = $tree_selection->get_selected_rows;
+    ruleset_edit_window($slist, $tree_path, undef, [$rover, $main_rulesets_preview_slist]);
+
+  }
+  $dialog->destroy;
+}
+
+sub menu_ruleset_edit {
+  my ($widget, $data) = @_;
+
+  my $main_rulesets_slist = $data->[0];
+  my $main_rulesets_preview_slist = $data->[1];
+  my $rover = $data->[2];
+
+  my $tree_selection = $main_rulesets_slist->get_selection;
+  my $tree_path = $tree_selection->get_selected_rows;
+  ruleset_edit_window($main_rulesets_slist, $tree_path, undef, [$rover, $main_rulesets_preview_slist]);
+}
+
+sub menu_ruleset_delete {
+  my ($widget, $data) = @_;
+
+  my $main_rulesets_slist = $data->[0];
+  my $main_rulesets_preview_slist = $data->[1];
+  my $rover = $data->[2];
+
+  my @selection = $main_rulesets_slist->get_selected_indices;
+  my $ruleset_name = $main_rulesets_slist->{data}[$selection[0]][0];
+
+  $main_rulesets_slist->get_selection->unselect_all;
+  $main_rulesets_preview_slist->parent->hide_all(); # workaround for broken unselect_all signal
+
+  splice @{$main_rulesets_slist->{data}}, $selection[0], 1;
+  my $count = $rover->del_rulesets($ruleset_name);
 }
 
 #######################################################################
@@ -214,38 +691,99 @@ sub host_new_window {
 sub run_rover {
   my ($widget, $rover) = @_;
 
-  my $gladexml_run = Gtk2::GladeXML->new("./rovergtk_run.glade");
+  if ( ! $rover->host() ) {
+    my $dialog = Gtk2::Dialog->new("Error: No Hosts Defined", undef,
+	[qw/destroy-with-parent/],
+	'gtk-ok' => 'none'
+    );
+    my $dialog_label = Gtk2::Label->new("You cannot run rover with no hosts defined.");
+    $dialog->vbox->add($dialog_label);
+    $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy;});
+    $dialog->show_all;
+    return;
+  }
+  my $gladexml_run = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "run_window");
+  $gladexml_run->signal_autoconnect_from_package();
 
   my $run_window = $gladexml_run->get_widget("run_window");
+  $run_window->signal_connect("delete_event" => sub {
+	my ($widget, $event) = @_;
+	$widget->destroy();
+  }, $main);
+  $run_window->set_title("Run Rover");
+
   my $run_cancel = $gladexml_run->get_widget("run_cancel");
   $run_cancel->signal_connect("clicked" => sub {
 	my ($widget, $run_window) = @_;
 	$run_window->destroy();
-  }, $run_window, );
+  }, $run_window );
 
-  my $run_rulesets_view = $gladexml_run->get_widget("run_rulesets_view");
+ # Menu items
+  my $run_menu_run = $gladexml_run->get_widget("run_menu_run");
+  my $run_menu_close = $gladexml_run->get_widget("run_menu_close");
+  my $run_menu_reset = $gladexml_run->get_widget("run_menu_reset");
+
   my $run_hosts_view = $gladexml_run->get_widget("run_hosts_view");
   my $run_hosts_all = $gladexml_run->get_widget("run_hosts_all");
   my $run_quick_command = $gladexml_run->get_widget("run_quick_command");
   my $run_quick_command_entry = $gladexml_run->get_widget("run_quick_command_entry");
 
+ # Set up ruleset combo box
   my $run_ruleset_combo_name = $gladexml_run->get_widget("run_ruleset_combo_name");
   my $run_ruleset_combo_name_model = Gtk2::ListStore->new ('Glib::String');
   my $run_ruleset_combo_name_renderer = Gtk2::CellRendererText->new;
   $run_ruleset_combo_name->set_model($run_ruleset_combo_name_model);
-  $run_ruleset_combo_name->pack_start($run_ruleset_combo_name_renderer, $true);
+  $run_ruleset_combo_name->pack_start($run_ruleset_combo_name_renderer, TRUE);
   $run_ruleset_combo_name->add_attribute($run_ruleset_combo_name_renderer, text => 0);
 
-#  my $run_ruleset_combo_os = $gladexml_run->get_widget("run_ruleset_combo_os");
-#  my $run_ruleset_combo_os_model = Gtk2::ListStore->new ('Glib::String');
-#  my $run_ruleset_combo_os_renderer = Gtk2::CellRendererText->new;
-#  $run_ruleset_combo_os->set_model($run_ruleset_combo_os_model);
-#  $run_ruleset_combo_os->pack_start($run_ruleset_combo_os_renderer, $true);
-#  $run_ruleset_combo_os->add_attribute($run_ruleset_combo_os_renderer, text => 0);
+ # Set up os combo box
+  my $run_ruleset_combo_os = $gladexml_run->get_widget("run_ruleset_combo_os");
+  my $run_ruleset_combo_os_model = Gtk2::ListStore->new ('Glib::String');
+  my $run_ruleset_combo_os_renderer = Gtk2::CellRendererText->new;
+  $run_ruleset_combo_os->set_model($run_ruleset_combo_os_model);
+  $run_ruleset_combo_os->pack_start($run_ruleset_combo_os_renderer, TRUE);
+  $run_ruleset_combo_os->add_attribute($run_ruleset_combo_os_renderer, text => 0);
 
-  my $run_rulesets_view = Gtk2::SimpleList->new_from_treeview($run_rulesets_view,
+  my $run_rulesets_view = $gladexml_run->get_widget("run_rulesets_view");
+  my $run_ruleset_add = $gladexml_run->get_widget("run_ruleset_add");
+  my $run_ruleset_remove = $gladexml_run->get_widget("run_ruleset_remove");
+  my $run_ruleset_clear = $gladexml_run->get_widget("run_ruleset_clear");
+
+  my $run_rulesets_slist = Gtk2::SimpleList->new_from_treeview($run_rulesets_view,
 	'Ruleset Name' => 'text',
 	'OS' => 'text', );
+  $run_rulesets_slist->set_reorderable(TRUE);
+
+ # Add ruleset name from combo box
+  $run_ruleset_add->signal_connect("clicked" => sub {
+	my ($widget, $data) = @_;
+
+	$run_rulesets_slist = $data->[0];
+	$run_ruleset_combo_name = $data->[1];
+	$run_ruleset_combo_os = $data->[2];
+
+	my $ruleset_name = $run_ruleset_combo_name->get_active_text;
+	my $ruleset_os = $run_ruleset_combo_os->get_active_text;
+	push(@{$run_rulesets_slist->{data}}, [ $ruleset_name, $ruleset_os ]);
+  }, [ $run_rulesets_slist, $run_ruleset_combo_name, $run_ruleset_combo_os ]);
+
+ # Remove selected ruleset name from view
+  $run_ruleset_remove->signal_connect("clicked" => sub {
+	my ($widget, $run_rulesets_slist) = @_;
+
+	my @selection = $run_rulesets_slist->get_selected_indices;
+	return if !@selection;
+
+	splice @{$run_rulesets_slist->{data}}, $selection[0], 1;
+  }, $run_rulesets_slist);
+
+ # Clear rulesets view
+  $run_ruleset_clear->signal_connect("clicked" => sub {
+	my ($widget, $run_rulesets_slist) = @_;
+
+	@{$run_rulesets_slist->{data}} = ();
+  }, $run_rulesets_slist);
+
 
   my $run_hosts_slist = Gtk2::SimpleList->new_from_treeview($run_hosts_view,
 	'Hostname' => 'text',
@@ -253,14 +791,19 @@ sub run_rover {
 	'Description' => 'text', );
   $run_hosts_slist->get_selection->set_mode ('multiple');
 
+  $run_hosts_slist->get_column(0)->set_sort_column_id(0);
+  $run_hosts_slist->get_column(1)->set_sort_column_id(1);
+  $run_hosts_slist->get_column(2)->set_sort_column_id(2);
+  $run_hosts_slist->get_model()->set_sort_func(0, \&slist_sort_by_column);
+
  # Make the run_hosts_all toggle and run_hosts_slist selections match
  #
   $run_hosts_slist->signal_connect("grab-focus" => sub {
 	my ($widget, $run_hosts_all) = @_;
 	if ( ! $widget->get_selected_indices ) {
-	  $run_hosts_all->set_active($true);
+	  $run_hosts_all->set_active(TRUE);
 	} else {
-	  $run_hosts_all->set_active($false);
+	  $run_hosts_all->set_active(FALSE);
 	}
   }, $run_hosts_all);
 
@@ -270,30 +813,934 @@ sub run_rover {
 	  $run_hosts_slist->unselect(0..@{$run_hosts_slist->{data}});
 	}
   }, $run_hosts_slist);
-  $run_hosts_all->set_active($true);
+  $run_hosts_all->set_active(TRUE);
 
  # Populate ruleset combo box
  #
-  foreach my $ruleset ( sort( $rover->rulesets() ) ) {
-    $run_ruleset_combo_name->append_text($ruleset);
+  foreach my $ruleset ( sort( $rover->ruleset() ) ) {
+      $run_ruleset_combo_name->append_text($ruleset);
   }
+  $run_ruleset_combo_name->set_active(0);
+
+ # Populate os combo box, havnt thought of a good place to store OS types yet.
+ # sorted using the popular author sort
+ #
+  foreach my $ruleset_os (@Rover::OS_LIST) {
+    $run_ruleset_combo_os->append_text($ruleset_os);
+  }
+  $run_ruleset_combo_os->set_active(0);
 
  # Populate host list window
  #
-  foreach my $host ( $rover->host_info() ) {
-    my $host_info = $rover->host_info($host);
-    push(@{$run_hosts_slist->{data}}, [ $host, $host_info->os, $host_info->description ]);
+  foreach my $host ( sort $rover->host() ) {
+    my $host_obj = $rover->host($host);
+    push(@{$run_hosts_slist->{data}}, [ $host, $host_obj->os, $host_obj->description ]);
   }
 
+ # Set run up button actions
+ #
+  my $run_rover = $gladexml_run->get_widget("run_rover");
+  my $run_reset = $gladexml_run->get_widget("run_reset");
+  my $run_getroot = $gladexml_run->get_widget("run_getroot");
+
+  my $run_reset_sub = sub {
+	my ($widget, $data) = @_;
+
+	my $gladexml = $data->[0];
+	my $run_rulesets_slist = $data->[1];
+	my $run_hosts_slist = $data->[2];
+
+	my $run_hosts_all = $gladexml->get_widget("run_hosts_all");
+	my $run_quick_command_entry = $gladexml->get_widget("run_quick_command_entry");
+	my $run_quick_command = $gladexml->get_widget("run_quick_command");
+
+	@{$run_rulesets_slist->{data}} = ();
+	$run_hosts_slist->unselect(0..@{$run_hosts_slist->{data}});
+	$run_hosts_all->set_active(TRUE);
+	$run_quick_command_entry->set_text("");
+	$run_quick_command->set_active(FALSE);
+  };
+  $run_reset->signal_connect("clicked" => $run_reset_sub, [ $gladexml_run, $run_rulesets_slist, $run_hosts_slist ]);
+  $run_menu_reset->signal_connect("activate" => $run_reset_sub, [ $gladexml_run, $run_rulesets_slist, $run_hosts_slist ]);
+  $run_menu_close->signal_connect("activate" => sub { my ($widget, $run_window) = @_; $run_window->destroy(); }, $run_window);
+
+  my $run_passwords_button = $gladexml_run->get_widget("run_passwords");
+  my $run_passwords_menu = $gladexml_run->get_widget("run_menu_passwords");
+  my $run_passwords_sub = sub {
+	my ($widget, $data) = @_;
+
+	my $r = $data->[0];
+	my $run_getroot = $data->[1];
+
+	# Check to see if we were called from run_getroot toggle, get root passwords instead
+	#
+	my $root_passwords = 0;
+	if ( $widget == $run_getroot ) {
+	  return(1) if ! $widget->get_active() ;
+	  $root_passwords = 1;
+	}
+
+	# Add passwords to the list
+	#
+	my $password_window = Gtk2::Window->new('toplevel');
+	my $password_vbox1 = Gtk2::VBox->new(0,5);
+	$password_window->signal_connect("delete_event" => sub { shift->destroy(); });
+	$password_window->set_title($r->user ."'s Passwords");
+	$password_window->set_title("Root's Passwords") if $root_passwords;
+	$password_window->add($password_vbox1);
+
+	my $password_label1 = Gtk2::Label->new("Add passwords, enter blank to finish.");
+	$password_label1->set_label("Add root passwords, enter blank to finish.") if $root_passwords;
+
+	$password_vbox1->pack_start($password_label1, 0, 0, 5);
+
+
+	my $count = $r->user_credentials();
+	$count = $r->root_credentials() if $root_passwords;
+
+	my $password_hbox1 = Gtk2::HBox->new(0,5);
+	my $password_label2 = Gtk2::Label->new("Password ($count): ");
+
+	my $password_entry = Gtk2::Entry->new;
+	$password_entry->set_visibility(FALSE);
+
+	$password_hbox1->pack_start($password_label2, 0, 0, 5);
+	$password_hbox1->pack_start($password_entry, 0, 0, 5);
+	$password_vbox1->pack_start($password_hbox1, 0, 0, 5);
+
+	$password_entry->set_activates_default(TRUE);
+
+	my $password_bbox1 = Gtk2::HButtonBox->new();
+	$password_bbox1->set_layout('end');
+	$password_vbox1->pack_start($password_bbox1, 0, 0, 5);
+
+	my $password_clear_button = Gtk2::Button->new("Clear");
+	my $password_button = Gtk2::Button->new("Done");
+
+	$password_clear_button->signal_connect("clicked" => sub {
+		my ($widget, $data) = @_;
+		my $r = $data->[0];
+		my $password_entry = $data->[1];
+		my $password_label2 = $data->[2];
+		my $password_button = $data->[3];
+		my $root_passwords = $data->[4];
+
+		if ( $root_passwords ) {
+		  $r->{"_root_credentials"} = [()];  # Yeah yeah, private variables I know...
+		} else {
+		  $r->{"_user_credentials"} = [()];
+		}
+		$password_label2->set_label("Password (0): ");
+
+		$password_entry->set_text("");
+		$password_button->set_label("Done");
+
+	}, [$r, $password_entry, $password_label2, $password_button, $root_passwords]);
+	$password_bbox1->pack_start($password_clear_button, 0, 0, 5);
+
+	$password_button->signal_connect("clicked" => sub {
+		my ($widget, $data) = @_;
+		my $r = $data->[0];
+		my $password_entry = $data->[1];
+		my $password_label2 = $data->[2];
+		my $root_passwords = $data->[3];
+
+		if ( ! $password_entry->get_text() ) { $widget->parent->parent->parent->destroy(); return; }
+
+		my @password;
+		if ( $root_passwords ) {
+		  @password = $r->root_credentials();
+		  push (@password, $password_entry->get_text());
+		  $r->root_credentials(@password);
+		} else {
+		  @password = $r->user_credentials();
+		  push (@password, $password_entry->get_text());
+		  $r->user_credentials(@password);
+		}
+
+		my $count = @password;
+		$password_label2->set_label("Password ($count): ");
+
+		$password_entry->set_text("");
+		$widget->set_label("Done");
+
+	}, [$r, $password_entry, $password_label2, $root_passwords]);
+	$password_bbox1->pack_start($password_button, 0, 0, 5);
+	$password_button->can_default(TRUE);
+	$password_button->has_default(TRUE);
+
+	$password_entry->signal_connect('key-release-event' => sub {
+		my ($widget, $key, $password_button) = @_;
+
+		if ( ! $widget->get_text() ) {
+		  $password_button->set_label("Done");
+		} else {
+		  $password_button->set_label("Add");
+		}
+	}, $password_button);
+	$password_entry->signal_connect('cut-clipboard' => sub {
+		my ($widget, $password_button) = @_;
+
+		if ( ! $widget->get_text() ) {
+		  $password_button->set_label("Done");
+		} else {
+		  $password_button->set_label("Add");
+		}
+	}, $password_button);
+
+	$password_window->set_default($password_button);
+
+	$password_window->set_modal(TRUE);
+	$password_window->show_all;
+  };
+  $run_passwords_button->signal_connect("clicked" => $run_passwords_sub, [$rover, $run_getroot] );
+  $run_passwords_menu->signal_connect("activate" => $run_passwords_sub, [$rover, $run_getroot] );
+  $run_getroot->signal_connect("toggled" => $run_passwords_sub, [$rover, $run_getroot] );
+
+  my $run_rover_sub = sub {
+    # Here we actually run rover.  We clone and fork a process
+    # so we can let the run happen in the background.
+    #
+	my ($widget, $data) = @_;
+
+	my $rover = $data->[0];
+	my $r = dclone($rover);
+
+	# Change the location of the logs directory to a unique value
+	#
+	my $old_logs_dir = $r->logs_dir();
+	my $new_logs_dir = $r->logs_dir() ."/". int(rand(999999));
+	if ( mkdir($new_logs_dir) ) {
+	  $r->logs_dir( $new_logs_dir );
+	}
+	
+	my $gladexml_run = $data->[1];
+	my $run_rulesets_slist = $data->[2];
+	my $run_hosts_slist = $data->[3];
+
+	# Get runtime input
+	#
+	my $run_hosts_all = $gladexml_run->get_widget("run_hosts_all");
+	my $run_quick_command_entry = $gladexml_run->get_widget("run_quick_command_entry");
+	my $run_quick_command = $gladexml_run->get_widget("run_quick_command");
+
+	# Determine which hosts to run on
+	#
+	my @run_hosts = ();
+	if ( ! $run_hosts_all->get_active() ) {
+	  my $tree_selection = $run_hosts_slist->get_selection;
+	  my @tree_path = $tree_selection->get_selected_rows;
+	  foreach my $path (@tree_path) {
+	    my $host_data = $run_hosts_slist->get_row_data_from_path($path);
+	    push(@run_hosts, $host_data->[0]);
+	  }
+	} else {
+	  @run_hosts = $r->host();
+	}
+
+	# Configure OS rulesets to run, modify os lists to match selection
+	#
+	my @run_rulesets = ();
+	if ( $run_quick_command->get_active() ) {
+	 # Running quick command, make new ruleset and run it instead
+	 #
+	  my $quick_command = $r->add_rulesets("RoverGTK QuickCommand");
+	  $quick_command->add("execute", $run_quick_command_entry->get_text());
+	  push(@run_rulesets, "RoverGTK QuickCommand");
+
+	} else {
+	 # Running selected rulesets
+	 #
+	  foreach my $ruleset_data (@{$run_rulesets_slist->{data}} ) {
+	    push(@run_rulesets, $ruleset_data->[0]);
+	    if ( $ruleset_data->[1] ne "All" ) {
+	      $r->ruleset($ruleset_data->[0])->os_list( $ruleset_data->[1] );
+	    }
+	  }
+	}
+
+	# Dont continue if there isnt anything to do
+	#
+	if ( ! @run_rulesets || ! @run_hosts ) {
+	  my $dialog = Gtk2::Dialog->new("Error: Nothing To Run", undef,
+		[qw/destroy-with-parent/],
+		'gtk-ok' => 'none'
+	  );
+	  my $dialog_label = Gtk2::Label->new("You must select at least one ruleset and host");
+	  $dialog->vbox->add($dialog_label);
+	  $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy;});
+	  $dialog->set_modal(TRUE);
+	  $dialog->show_all;
+
+	  return 1;
+	}
+
+	# Finally, determine if we are going to run as root
+	# 
+	my $runas_root = 0;
+	$runas_root = 1 if $run_getroot->get_active;
+
+	# Set up a child pipe to the parent, fork and run rover
+	#
+	my $start_time = time();
+	my $pipe;
+	my $pid = open($pipe, "-|");
+	if ( $pid == -1 ) {
+	  die "Could not fork\n";
+	}
+
+	if ( $pid == 0 ) {
+	 # We are the child process, unload Gtk and run rover.
+	 #
+	  Gtk2->main_quit;
+	  no Gtk2;
+	  no Glib;
+
+	  $SIG{'INT'} = sub {
+		my %run_status = $r->run_status();
+		foreach my $key (keys %run_status) {
+		  next if $key eq "failed_hosts" ;
+
+		  print "RUN_STATUS:_lastrun_$key,". $run_status{$key} ."\n";
+		}
+	  };
+	  $r->run_rulesets(@run_rulesets, {'Hosts' => \@run_hosts, 'Root' => $runas_root});
+
+	  my %run_status = $r->run_status();
+	  foreach my $key (keys %run_status) {
+	    next if $key eq "failed_hosts" ;
+
+	    print "RUN_STATUS:_lastrun_$key,". $run_status{$key} ."\n";
+	  }
+
+	  my %log_dirs = ();
+
+	 # Clean up old logs
+	 #
+	  opendir(LOGS, $old_logs_dir);
+	  foreach my $file (readdir(LOGS)) {
+	    if ( ! -d $old_logs_dir ."/". $file ) { next; }
+	    if ( $file =~ m/^[\.]+$/ ) { next; }
+
+	    my @fstat = stat($old_logs_dir ."/". $file);
+	    $log_dirs{$file} = $fstat[10];
+	  }
+	  my @dirs = sort { $log_dirs{$b} <=> $log_dirs{$a} } keys %log_dirs;
+	  if ( @dirs > 10 ) {
+	    my @del_dirs = @dirs[10..(@dirs-1)];
+	    foreach (@del_dirs) {system("rm -rf $old_logs_dir/$_");}
+	  }
+
+	  exit(0);
+
+	} else {
+	 # We are the parent process, set up the gtk status window and watch the pipe
+	 #
+	  my $gladexml_run_status = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "run_status_window");
+          $gladexml_run_status->signal_autoconnect_from_package();
+	  my $run_status_window = $gladexml_run_status->get_widget("run_status_window");
+	  $run_status_window->signal_connect("delete_event" => sub {
+		my ($widget, $event, $r) = @_;
+		my $logs_dir = $r->logs_dir();
+
+		unlink(<$logs_dir/*>);
+		rmdir($logs_dir);
+
+		$widget->destroy();
+		$run_window->show();
+	  }, $r);
+	  $run_window->hide();
+
+	 # Configure menu callbacks
+	  my $run_status_menu_saveas = $gladexml_run_status->get_widget("run_status_menu_saveas");
+	  my $run_status_menu_close = $gladexml_run_status->get_widget("run_status_menu_close");
+
+	  $run_status_menu_close->signal_connect("activate" => sub {
+		my ($widget, $r) = @_;
+		my $logs_dir = $r->logs_dir();
+
+		unlink(<$logs_dir/*>);
+		rmdir($logs_dir);
+
+		$run_window->show();
+		$run_status_window->destroy();
+	  }, $r);
+
+	  $run_status_menu_saveas->signal_connect("activate" => sub {
+		my ($widget, $r) = @_;
+		my $logs_dir = $r->logs_dir();
+
+		my $saveas_file_chooser = Gtk2::FileChooserDialog->new("Save Logs", undef, "open",
+			"gtk-cancel" => "cancel",
+			"gtk-open" => "accept", );
+		$saveas_file_chooser->set_show_hidden(TRUE);
+		my $response = $saveas_file_chooser->run;
+		if ( $response eq "accept" ) {
+		  my $filename = $saveas_file_chooser->get_filename();
+		  my $prev_dir = $ENV{PWD};
+		  chdir($logs_dir);
+		  my $result = system("tar cf '$filename' *.log >/dev/null 2>&1");
+		  if ( $result != 0 ) {
+		    my $dialog = Gtk2::Dialog->new("Error: Log save failed", undef,
+			[qw/modal destroy-with-parent/],
+			'gtk-ok' => 'none');
+
+		    my $dialog_label = Gtk2::Label->new("Unable to create tar file: '$filename'.  Please choose another name");
+		    $dialog->vbox->add($dialog_label);
+		    $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy();});
+		    $dialog->set_modal(TRUE);
+		    $dialog->show_all();
+		  }
+		  chdir($prev_dir);
+		}
+		$saveas_file_chooser->destroy();
+	  }, $r);
+
+	  my $run_progress_box = $gladexml_run_status->get_widget("run_progress_box");
+	  my $run_progress_bar = $gladexml_run_status->get_widget("run_progress_bar");
+	  my $run_progress_stop = $gladexml_run_status->get_widget("run_progress_stop");
+	  $run_progress_bar->set_fraction(0);
+	  $run_progress_bar->set_text('0%');
+
+	  $run_progress_stop->signal_connect("clicked" => sub {
+		my ($widget, $pid) = @_;
+		kill(1, $pid);
+	  }, $pid);
+
+	  my $run_status_search_box = $gladexml_run_status->get_widget("run_status_search_box");
+	  my $run_status_bbox = $gladexml_run_status->get_widget("run_status_bbox");
+
+	 # Set up the search button actions
+	  my $run_status_search_logs = $gladexml_run_status->get_widget("run_status_search_logs");
+	  my $run_status_search_entry = $gladexml_run_status->get_widget("run_status_search_entry");
+
+	  $run_status_search_logs->signal_connect("clicked" => sub {
+		my ($widget, $data) = @_;
+
+		my $search_entry = $data->[0];
+		my $search_text = $search_entry->get_text();
+
+		my $r = $data->[1];
+
+		my $gladexml_run_status_search = Gtk2::GladeXML->new($Config{"siteprefix"}."/bin/rovergtk.glade", "run_status_search");
+		$gladexml_run_status_search->signal_autoconnect_from_package();
+
+		my $run_status_search = $gladexml_run_status_search->get_widget("run_status_search");
+		$run_status_search->set_title("Search Logs");
+		$run_status_search->signal_connect("delete_event" => sub { shift->destroy(); });
+		$run_status_search->set_transient_for($run_status_window);
+
+		my $run_status_search_entry = $gladexml_run_status_search->get_widget("run_status_search_entry");
+		my $run_status_search_search = $gladexml_run_status_search->get_widget("run_status_search_search");
+
+		$run_status_search_entry->set_text($search_text) if $search_text ;
+
+		my $run_status_search_view = $gladexml_run_status_search->get_widget("run_status_search_view");
+		my $run_status_search_slist = Gtk2::SimpleList->new_from_treeview($run_status_search_view,
+			'Hostname' => 'text',
+			'Matching Line' => 'text' );
+
+		$run_status_search_slist->get_column(0)->set_sort_column_id(0);
+		$run_status_search_slist->get_column(1)->set_sort_column_id(1);
+		$run_status_search_slist->get_model()->set_sort_func(0,\&slist_sort_by_column);
+
+		my $run_status_search_close = $gladexml_run_status_search->get_widget("run_status_search_close");
+		$run_status_search_close->signal_connect("clicked" => sub {
+			my ($widget, $run_status_search) = @_;
+			$run_status_search->destroy();
+		}, $run_status_search );
+
+		# Do the actual act of searching logs and displaying results
+		my $run_status_search_sub = sub {
+			my ($search_text, $run_status_search_slist, $rover) = @_ ;
+
+			if ( $search_text eq "" ) { return(0); }
+			@{$run_status_search_slist->{data}} = ();
+
+			foreach my $host ( sort $rover->host() ) {
+			  open(FIN, $rover->logs_dir()."/$host.log") or next;
+			  while (<FIN>) {
+			    chomp $_;
+			    $_ =~ s///g ;
+
+			    if ( m/$search_text/ ) {
+			      my @tmp_array = ($host, $_);
+			      push (@{$run_status_search_slist->{data}}, \@tmp_array);
+			    }
+			  }
+			  close(FIN);
+			}
+			return(0);
+		};
+		$run_status_search_search->can_default(TRUE);
+		$run_status_search->set_default($run_status_search_search);
+		$run_status_search_search->signal_connect("clicked" => sub {
+			&$run_status_search_sub($run_status_search_entry->get_text(), $run_status_search_slist, $r);
+		});
+		$run_status_search_search->has_default(TRUE);
+		$run_status_search_entry->set_activates_default(TRUE);
+
+		if ( $run_status_search_entry->get_text() ) {
+		  &$run_status_search_sub($run_status_search_entry->get_text(), $run_status_search_slist, $r);
+		}
+
+		# Configure menu callbacks
+		my $run_status_search_menu_saveas = $gladexml_run_status_search->get_widget("run_status_search_menu_saveas");
+		my $run_status_search_menu_close = $gladexml_run_status_search->get_widget("run_status_search_menu_close");
+
+		$run_status_search_menu_close->signal_connect("activate" => sub {
+			my ($widget, $run_status_search) = @_;
+			$run_status_search->destroy();
+		}, $run_status_search);
+
+		$run_status_search_menu_saveas->signal_connect("activate" => sub {
+			my ($widget, $slist) = @_;
+
+			my $saveas_file_chooser = Gtk2::FileChooserDialog->new("Search Results Save As", undef, "open",
+				"gtk-cancel" => "cancel",
+				"gtk-open" => "accept", );
+			$saveas_file_chooser->set_show_hidden(TRUE);
+			my $response = $saveas_file_chooser->run;
+			if ( $response eq "accept" ) {
+			  my $filename = $saveas_file_chooser->get_filename();
+			  my $fh = undef;
+			  open($fh, "> $filename");
+			  if ( $fh ) {
+			    foreach my $ref ( @{$slist->{data}} ) {
+			      print $fh $ref->[0] .",". $ref->[1] ."\n";
+			    }
+			    close($fh);
+			  } else {
+			    my $dialog = Gtk2::Dialog->new("Error: Unable to open file for writing", undef,
+				[qw/modal destroy-with-parent/],
+				'gtk-ok' => 'none');
+			    my $dialog_label = Gtk2::Label->new("File '$filename' is not available for writing");
+			    $dialog->vbox->add($dialog_label);
+			    $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy();});
+			    $dialog->set_modal(TRUE);
+			    $dialog->show_all();
+			  }
+			}
+			$saveas_file_chooser->destroy();
+
+		},$run_status_search_slist);
+
+#		$run_status_search->set_modal(TRUE);
+		$run_status_search->show_all();
+		
+	  }, [$run_status_search_entry, $r] );
+
+	  my $run_status_hosts_view = $gladexml_run_status->get_widget("run_status_hosts_view");
+	  my $run_status_hosts_slist = Gtk2::SimpleList->new_from_treeview($run_status_hosts_view,
+		'Hostname' => 'text',
+		'Status' => 'text'
+	  );
+	  my %run_hosts_info = ();
+	  $run_status_hosts_slist->signal_connect("row_activated" => \&host_run_status, [$r, \%run_hosts_info, $run_status_window]);
+
+	  my $run_status_close = $gladexml_run_status->get_widget("run_status_close");
+	  $run_status_close->signal_connect("clicked" => sub {
+		my ($widget, $data) = @_;
+
+		my $run_status_window = $data->[0];
+		my $r = $data->[1];
+
+		my $logs_dir = $r->logs_dir();
+		unlink(<$logs_dir/*>);
+		rmdir($logs_dir);
+
+		$run_status_window->destroy();
+		$run_window->show();
+	  }, [$run_status_window, $r] );
+
+	  my $run_hosts_progress_count = @run_hosts * 2;
+	  my $run_hosts_current_count = 0;
+	  my $gtk2_helper;
+	  $gtk2_helper = Gtk2::Helper->add_watch( $pipe->fileno, "in", sub { 
+	    # Watch standard output from child process.  Use info to update status window
+	    #
+		my $buffer;
+		if ( not sysread($pipe, $buffer, 4096) ) {
+		 # close the pipe and waitpid as the child has closed STDOUT
+		 #
+		  Gtk2::Helper->remove_watch( $gtk2_helper ) or die "couldnt remove watcher\n";
+		  close($pipe);
+
+		 # Hide the progress bar and show search and button box
+		  $run_progress_box->hide();
+		  $run_status_search_box->show_all();
+		  $run_status_bbox->show_all();
+
+		 # Only now do we allow the user to sort this window
+		  $run_status_hosts_slist->get_column(0)->set_sort_column_id(0);
+		  $run_status_hosts_slist->get_column(1)->set_sort_column_id(1);
+		  $run_status_hosts_slist->get_model()->set_sort_func(0, \&slist_sort_by_column);
+
+		  waitpid($pid, WNOHANG);
+		  my $total_time = time() - $start_time ;
+
+
+		 # Compile our own list of failed servers because we dont get that from the child
+		  foreach my $hashref ( @{ $run_status_hosts_slist->{"data"} } ) {
+		    push(@{ $r->{'_lastrun_failed_hosts'}}, $hashref->[0]) if $hashref->[1] ne "Done" ;
+		  }
+
+		 # Print a status window with the results of the run
+		  my $status_dialog = Gtk2::Dialog->new("Execution Status", undef,
+			[qw/modal destroy-with-parent/],
+			'gtk-ok' => 'none'
+		  );
+		  my $status_label = Gtk2::Label->new("");
+		  my %run_status = $r->run_status();
+
+		  if ( $run_status{'num_hosts'} == $run_status{'num_succeed'} ) {
+		   # Message to print if all hosts succeeded
+		    $status_label->set_label("All hosts completed successfully in $total_time seconds.");
+
+		  } else {
+		   # Message to print if at least one host failed
+		    my $total_failed = @{ $run_status{'failed_hosts'} };
+		    my $total_canceled = $run_status{'num_hosts'} - $run_status{'num_succeed'} - $total_failed ;
+		    $status_label->set_label("--------------------------------------
+FAILURE COUNT
+--------------------------------------
+Bad Passwords  \t: ". $run_status{"failed_password"} ."
+Root Failures  \t: ". $run_status{"failed_getroot"} ."
+Profile Errors \t: ". $run_status{"failed_profile"} ."
+Network Errors \t: ". $run_status{"failed_network"} ."
+Failed Rulesets\t: ". $run_status{"failed_ruleset"} ."
+
+Canceled       \t: $total_canceled
+--------------------------------------
+Total Failed:  \t  $total_failed
+
+Completed in $total_time seconds.
+");
+		  }
+
+		  $status_dialog->vbox->add($status_label);
+		  $status_dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy()});
+		  $status_dialog->set_transient_for($run_status_window);
+		  $status_dialog->show_all;
+		  return 1;
+		}
+		my @buffer_lines = split(/\n/, $buffer);
+
+		foreach my $line (@buffer_lines) {
+		 # Read each line from the buffer, update accordingly.
+                 #
+		  chomp $line;
+		  my @host_data = split(/:/, $line);
+		  if ( $host_data[0] eq "RUN_STATUS" ) {
+		   # We are getting run status information from the child, update the run_status variables
+		   #
+		    my @status_data = split(/,/, $host_data[1]);
+		    $r->{$status_data[0]} = $status_data[1] ;
+		    next;
+		  }
+		  if ( $r->host($host_data[0]) ) {
+		    if ( defined($run_hosts_info{$host_data[0]}) ) {
+		      push @{$run_hosts_info{$host_data[0]}}, $host_data[1];
+		    } else {
+		      my @tmp_messages = ($host_data[1]);
+		      $run_hosts_info{$host_data[0]} = \@tmp_messages;
+		    }
+		    my $row_exists = 0;
+		    foreach my $slist_row ( @{$run_status_hosts_slist->{data}} ) {
+		     # Find an existing row for the host in questions
+		     #
+		      if ( $slist_row->[0] eq $host_data[0] ) {
+		        $slist_row->[1] = $host_data[1];
+		        $row_exists = 1;
+
+		        if ( $host_data[1] eq "Done" || $host_data[1] eq "Network Failure" || $host_data[1] eq "Bad Password" || $host_data[1] eq "Failed Profile" || $host_data[1] eq "Getroot Failure" || $host_data[1] eq "Failed Rulese" ) {
+		         # Host is finished, update progress bar
+		         #
+		          $run_hosts_current_count++;
+		          my $run_hosts_current_percent = int(100 * ($run_hosts_current_count / $run_hosts_progress_count));
+		          $run_progress_bar->set_fraction($run_hosts_current_count / $run_hosts_progress_count);
+		          $run_progress_bar->set_text("$run_hosts_current_percent\%");
+		        }
+		        last;
+		      }
+		    }
+		    if ( ! $row_exists ) {
+		     # Row does not exist for current host, add it, scroll to the bottom, and update progress bar
+		     #
+		      push @{$run_status_hosts_slist->{data}}, [$host_data[0], $host_data[1]] ;
+		      my $path = Gtk2::TreePath->new_from_indices(scalar( @{ $run_status_hosts_slist->{data} })-1);
+		      $run_status_hosts_slist->scroll_to_cell($path);
+
+		      $run_hosts_current_count++;
+		      my $run_hosts_current_percent = int(100 * ($run_hosts_current_count / $run_hosts_progress_count));
+		      $run_progress_bar->set_fraction($run_hosts_current_count / $run_hosts_progress_count);
+		      $run_progress_bar->set_text("$run_hosts_current_percent\%");
+		    }
+		  }
+		}
+		return 1;
+	  },);
+	  $run_status_window->show_all();
+
+	  $run_status_search_box->hide();
+	  $run_status_bbox->hide();
+	}
+
+  };
+  $run_rover->signal_connect("clicked" => $run_rover_sub, [ $rover, $gladexml_run, $run_rulesets_slist, $run_hosts_slist ]);
+  $run_menu_run->signal_connect("activate" => $run_rover_sub, [ $rover, $gladexml_run, $run_rulesets_slist, $run_hosts_slist ]);
+
+  if ( ! $rover->ruleset() ) {
+    my $run_ruleset_label1 = $gladexml_run->get_widget("run_ruleset_label1");
+    my $run_ruleset_combo_hbox1 = $gladexml_run->get_widget("run_ruleset_combo_hbox1");
+    my $run_ruleset_scrollw = $gladexml_run->get_widget("run_ruleset_scrollw");
+    my $run_ruleset_bbox1 = $gladexml_run->get_widget("run_ruleset_bbox1");
+
+    $run_ruleset_label1->set_text("No Rulesets Defined");
+    $run_ruleset_combo_hbox1->destroy();
+    $run_ruleset_scrollw->destroy();
+    $run_ruleset_bbox1->destroy();
+  }
   $run_window->show_all;
+}
+
+sub host_run_status {
+# When a host row is activated from the run_status_window, this routine creates
+# a popup with information about that particular host and allows the user
+# to view the log file.
+#
+  my ($slist, $path, $column, $data) = @_;
+
+  my $r = $data->[0];
+  my $info = $data->[1];
+  my $run_status_window = $data->[2];
+
+  my $row_ref = $slist->get_row_data_from_path($path);
+  my $hostname = $row_ref->[0];
+
+  my $host_run_status_window = Gtk2::Window->new('toplevel');
+  $host_run_status_window->set_default_size(300, 250);
+  $host_run_status_window->set_title("$hostname - Messages");
+  $host_run_status_window->signal_connect("delete_event" => sub { shift->destroy(); });
+  $host_run_status_window->set_transient_for($run_status_window);
+
+  my $vbox1 = Gtk2::VBox->new(0,5);
+  $host_run_status_window->add($vbox1);
+
+  my $host_run_status_slist = Gtk2::SimpleList->new ('Messages' => 'text');
+  $host_run_status_slist->get_selection->unselect_all();
+  $host_run_status_slist->get_selection->set_mode('none');
+
+  my $host_run_status_swindow = Gtk2::ScrolledWindow->new(undef, undef);
+  $host_run_status_swindow->add_with_viewport($host_run_status_slist);
+  $vbox1->pack_start($host_run_status_swindow, 1, 1, 0);
+
+  foreach my $message (@{$info->{$hostname}}) {
+    push @{$host_run_status_slist->{data}}, $message;
+  }
+
+  my $bbox1 = Gtk2::HButtonBox->new;
+  $bbox1->set_layout('end');
+  $vbox1->pack_start($bbox1, 0, 0, 0);
+
+  my $host_run_status_viewlog = Gtk2::Button->new_with_label("View Log");
+  my $host_run_status_close = Gtk2::Button->new_with_label("Close");
+
+  $bbox1->pack_start($host_run_status_viewlog, 0, 0, 0);
+  $bbox1->pack_start($host_run_status_close, 0, 0, 0);
+
+  $host_run_status_viewlog->signal_connect("clicked", sub {
+	my ($widget, $data) = @_;
+
+	my $hostname = $data->[0];
+	my $logs_dir = $data->[1];
+
+	if ( ! stat( "$logs_dir/$hostname.log" ) ) {
+	  my $dialog = Gtk2::Dialog->new("Error: No Log File", undef,
+		[qw/modal destroy-with-parent/],
+		'gtk-ok' => 'none'
+	  );
+	  my $dialog_label = Gtk2::Label->new("No log file exists for $hostname.");
+	  $dialog->vbox->add($dialog_label);
+	  $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy;});
+	  $dialog->set_modal(TRUE);
+	  $dialog->show_all;
+	  return;
+	}
+	my $log_window = Gtk2::Window->new('toplevel');
+	$log_window->set_default_size(600, 500);
+	$log_window->set_title("$hostname - Logs");
+	$log_window->signal_connect("delete_event" => sub { shift->destroy(); });
+
+	my $log_vbox1 = Gtk2::VBox->new(0,5);
+	$log_window->add($log_vbox1);
+
+	my $log_text = Gtk2::TextView->new;
+	my $log_swindow = Gtk2::ScrolledWindow->new(undef, undef);
+	$log_swindow->add_with_viewport($log_text);
+	$log_vbox1->pack_start($log_swindow, 1, 1, 0);
+
+	my $log_bbox1 = Gtk2::HButtonBox->new;
+	$log_bbox1->set_layout('end');
+	$log_vbox1->pack_start($log_bbox1, 0, 0, 0);
+
+	my $log_close = Gtk2::Button->new_with_label("Close");
+	$log_bbox1->pack_start($log_close, 0, 0, 0);
+
+	$log_close->signal_connect("clicked", sub {
+		my ($widget, $log_window) = @_;
+
+		$log_window->destroy();
+	}, $log_window);
+
+	open(LOG_FILE, "$logs_dir/$hostname.log");
+	my $log_text_buffer = $log_text->get_buffer();
+	while (<LOG_FILE>) {
+	  $log_text_buffer->insert( $log_text_buffer->get_end_iter, $_ );
+	}
+	close(LOG_FILE);
+        $log_text->set_editable(FALSE);
+	$log_window->set_transient_for($host_run_status_window);
+	$log_window->show_all();
+  }, [$hostname, $r->logs_dir()]);
+
+  $host_run_status_close->signal_connect("clicked", sub {
+	my ($widget, $host_run_status_window) = @_;
+	$host_run_status_window->destroy();
+  }, $host_run_status_window);
+
+  $host_run_status_window->show_all();
 }
 
 #######################################################################
 # Common routines
 #
+sub slist_sort_by_column {
+# Sort slist by column
+#
+  my ($slist, @iter) = @_;
+
+  @iter = map {$_ = $slist->get($_,0);$_} @iter;
+  return ($iter[0] cmp $iter[1]);
+}
+
+sub about_rovergtk {
+# Print about rovergtk window
+#
+  my $dialog = Gtk2::Dialog->new("About RoverGTK", undef,
+	[qw/modal destroy-with-parent/],
+	'gtk-ok' => 'none',);
+  my $dialog_label = Gtk2::Label->new("RoverGTK Version ". $Rover::VERSION ."
+
+By: Bryan Bueter
+http://sourceforge.net/projects/rover
+
+");
+
+  $dialog->vbox->pack_start($dialog_label,0, 0, 5);
+  $dialog->signal_connect("response" => sub {my $widget = shift; $widget->destroy;});
+  $dialog->set_resizable(FALSE);
+  $dialog->show_all;
+
+  return;
+}
+
+sub help_window {
+# Display a window for perldoc documentation for module name
+#
+  my ($widget, $module) = @_;
+
+  my $perldoc_window = Gtk2::Window->new('toplevel');
+  $perldoc_window->set_default_size(600, 500);
+  $perldoc_window->set_title("Help - ". $module);
+  $perldoc_window->signal_connect("delete_event" => sub { shift->destroy(); });
+
+  my $vbox1 = Gtk2::VBox->new(0, 5);
+  $perldoc_window->add($vbox1);
+
+  my $perldoc_text = Gtk2::TextView->new;
+  my $perldoc_swindow = Gtk2::ScrolledWindow->new(undef, undef);
+  $perldoc_swindow->add_with_viewport($perldoc_text);
+  $vbox1->pack_start($perldoc_swindow, 1, 1, 0);
+
+  my $bbox1 = Gtk2::HButtonBox->new;
+  $bbox1->set_layout('end');
+  $vbox1->pack_start($bbox1, 0, 0, 0);
+
+  my $close_button = Gtk2::Button->new_with_label("Close");
+  $bbox1->pack_start($close_button, 0, 0, 0);
+
+  $close_button->signal_connect("clicked", sub {
+	my ($widget, $perldoc_window) = @_;
+	$perldoc_window->destroy();
+  }, $perldoc_window);
+
+  open(PERLDOC, $Config{"siteprefix"}."/bin/perldoc -t $module 2>&1 |");
+  my $perldoc_buffer = $perldoc_text->get_buffer();
+  while (<PERLDOC>) {
+    $perldoc_buffer->insert($perldoc_buffer->get_end_iter, $_);
+  }
+  close(PERLDOC);
+
+  $perldoc_text->set_editable(FALSE);
+  $perldoc_window->set_modal(TRUE);
+  $perldoc_window->show_all();
+}
 
 sub quit_rovergtk {
   Gtk2->main_quit;
 
   exit(0);
 }
+
+__END__
+
+=head1 NAME
+
+rovergtk - Gtk2 interface to Rover perl module
+
+=head1 SYNOPSYS
+
+rover [--config-file <file>]
+
+=head1 DESCRIPTION
+
+Rovergtk is a Gtk2 interface to the Rover perl module.  This is an
+interactive interface where you can configure rover and run rulesets
+against hosts.  Help menus are available within.
+
+=head1 USAGE
+
+=over 4
+
+=item --config-file I<configfile>
+
+=over 8
+
+Use I<configfile> instead of the default $HOME/.rover/config.run.
+
+=back
+
+=head1 AUTHORS
+
+=item Bryan A Bueter
+
+=head1 LICENSE
+
+This program can be used under the same terms as Perl.
+
+=head1 DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+

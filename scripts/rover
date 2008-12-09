@@ -1,40 +1,59 @@
-#!/usr/bin/env perl
+#!perl
 #****************************************************************************
 # rover - Command line interface to Rover perl module
 #
 #
 #****************************************************************************
-use Config;
+use strict;
 use Rover;
+
+use POSIX;
+use IO::File;
+use Carp;
+
 use Getopt::Long qw( :config no_ignore_case bundling );
-use Term::ReadLine;
-use File::Temp qw( :POSIX );
+
+# Sorry, but Term::ReadLine is too unpredictable for threads
+#
+#use Term::ReadLine;
 
 # Global rover configs controlled by GetOptions result
 #
-my @rulesets = ();		# Array of rulesets to run
-my $auth = 1;			# Prompt for authentication
-my $quick_command = "";		# Run quick command with supplied string
-my $shell = 0;			# Run shell or not
-my $search_logs = "";		# Search string for log search
-my $get_help = 0;		# Print help message
-my $banner = 1;			# Print banner of things to do
-my $pick_hosts = 0;		# Pick hosts from list
-my $list_rulesets = 0;		# List available rulesets
-my $list_rulesets_long = 0;	# Do a long list of rulesets
+our @rulesets = ();		# Array of rulesets to run
+our @hosts = ();		# Array of hosts to run on
+our $auth = 1;			# Prompt for authentication
+our $quick_command = "";	# Run quick command with supplied string
+our $shell = 0;			# Run shell or not
+our $getroot = 0;		# Run as root or not
+our $search_logs = "";		# Search string for log search
+our $get_help = 0;		# Print help message
+our $banner = 1;		# Print banner of things to do
+our $pick_hosts = 0;		# Pick hosts from list
+our $list_rulesets = 0;		# List available rulesets
+our $list_rulesets_long = 0;	# Do a long list of rulesets
+our $config_file = "";		# Location of config file
+our $logs_dir = "";		# Location of logs directory
+our $max_threads = 0;		# Number of threads to run in parralell
+our $debug = 0;			# Debug level to run at
+our $upgrade = 0;		# Upgrade from previous version
 
-my %options = (
-	"hosts-file=s" => \$Rover::hosts_file,
-	"config-file=s" => \$Rover::config_file,
-	"logs-dir=s" => \$Rover::logs_dir,
+sub validate_opts {
+# This function gathers the options passed to rover and configures the
+# appropriate rover settings.
+#
+  my $rover = shift;
+
+  my $search_string = "";
+  my %options = (
+	"config-file=s" => \$config_file,
+	"logs-dir=s" => \$logs_dir,
 	"p|pick" => \$pick_hosts,
 
-	"f|forks=i" => \$Rover::parallel_process_count,
-	"t|threads" => \$Rover::use_threads,
+	"f|forks=i" => \$max_threads,
 
-	"v|verbose+" => \$Rover::debug,
+	"v|verbose+" => \$debug,
 	"d|debug" => sub {
-		$Rover::debug=2;
+		$debug = 3;
 		$Expect::Exp_Internal=1;
 		$Expect::Log_Stdout=1;
 		$Expect::Debug=3;
@@ -46,39 +65,66 @@ my %options = (
 	"L|long-list" => \$list_rulesets_long,
 
 	"s|shell" => \$shell,
+	"R|root" => \$getroot,
 	"S|search=s" => \$search_string,
 	"h|help" => \$get_help,
+	"u|upgrade" => \$upgrade,
 	"auth!" => \$auth,
 	"banner!" => \$banner,
 	"version" => \&VERSION_MESSAGE,
-);
-
-sub validate_opts {
-# This function gathers the options passed to rover and configures the
-# appropriate rover settings.
-#
-
+  );
+ 
   if ( ! GetOptions(%options) ) {
-    usage();
+    usage($rover);
     return(1);
   }
+
+ # Save options to the object
+ #
+  $rover->config_file($config_file) if $config_file;
+  $rover->logs_dir($logs_dir) if $logs_dir;
+  $rover->max_threads($max_threads) if $max_threads;
+  $rover->debug($debug) if $debug;
 
   @rulesets = split(/,/,join(',',@rulesets));
 
   if ($get_help) {
-    usage();
+    usage($rover);
     return(0);
+  }
+
+ # Run a configuration upgrade
+ #
+  if ( $upgrade ) {
+    run_upgrade($rover);
+    exit(1);
   }
 
  # Search log files here
  #
   if ($search_string) {
-    opendir(LOGS, $Rover::logs_dir) or die "Error: cannot open logs directroy: $Rover::logs_dir\n";
 
+   # Find last run and search those logs
+    opendir(LAST_RUN, $rover->logs_dir) or die "Error: cannot open logs directroy: ". $rover->logs_dir ."\n";
+    my $lastrun_dir = "";
+    my $lastrun_ctime = 0;
+    foreach my $file (readdir(LAST_RUN)) {
+      if ( ! -d $rover->logs_dir ."/". $file ) { next; }
+      if ( $file =~ m/^[\.]+$/ ) { next; }
+      my @fstat = stat($rover->logs_dir ."/". $file);
+      if ( $fstat[10] > $lastrun_ctime ) {
+        $lastrun_dir = $file;
+        $lastrun_ctime = $fstat[10];
+      }
+    }
+    close(LAST_RUN);
+
+   # Actually do the searching
+    opendir(LOGS, $rover->logs_dir ."/". $lastrun_dir)
+	or die "Error: cannot open logs directroy: ". $rover->logs_dir ."/". $lastrun_dir ."\n";
     foreach my $file (readdir(LOGS)) {
       next if ( $file =~ m/^[\.]+$/ ) ;
-      open(FIN, "$Rover::logs_dir/$file") or next;
-
+      open(FIN, $rover->logs_dir ."/$lastrun_dir/$file") or next;
       my $host_name = $file;
       $host_name =~ s/\.log// ;
 
@@ -88,17 +134,12 @@ sub validate_opts {
           print "$host_name,$_\n";
         }
       }
+      close(FIN);
     }
     close(LOGS);
 
     exit(0);
   }
-
-  if ( $Rover::use_threads && ! $Config{useithreads} ) {
-    print "Warning: Your version of perl does not support threading.  Threads will not be used\n\n";
-    $Rover::use_threads = 0;
-  }
-
   return(1);
 }
 
@@ -110,27 +151,23 @@ sub VERSION_MESSAGE {
 sub usage {
 # Print a nice little help page regarding the command line usage
 #
-  print "Usage: rover [options] [--ruleset <name> [--ruleset <name> ...]]\n";
+  my $rover = shift;
+  print "Usage: rover [options] [-r <name> [-r <name> ...]]  [-q <command>]\n";
   print "\n";
   print "  -r|--ruleset <name>\n";
-  print "                 Specify to run ruleset on ALL hosts, default is to use\n";
-  print "                 what is specified in \$Rover::config_file\n";
-  print "\n";
-  print "  --hosts-file <file>\n";
-  print "                 File with a list of host names/ips.  Default is\n";
-  print "                 '$Rover::hosts_file'\n";
-  print "\n";
-  print "  --config-file <file>\n";
-  print "                 Rover commands file.  Default is\n";
-  print "                 $Rover::config_file.\n";
-  print "\n";
-  print "  --logs-dir <dir>\n";
-  print "                 Specify an alternative location for the logs directory.\n";
-  print "                 The default is to use '$Rover::logs_dir'\n";
+  print "                 Specify which ruleset to run.  Multiple rulesets are allowed.\n";
   print "\n";
   print "  -q|--quick-command <command>\n";
   print "                 Run quick command.  Puts supplied string insude\n";
   print "                 an execute() ruleset command, so you dont need to\n";
+  print "\n";
+  print "  --config-file <file>\n";
+  print "                 Rover commands file.  Default is\n";
+  print "                 ". $rover->config_file .".\n";
+  print "\n";
+  print "  --logs-dir <dir>\n";
+  print "                 Specify an alternative location for the logs directory.\n";
+  print "                 The default is to use '". $rover->logs_dir ."'\n";
   print "\n";
   print "  -S|--search <regex>\n";
   print "                 Search log files from last run for string <regex>\n";
@@ -140,13 +177,14 @@ sub usage {
   print "  -l|--list      List configured rulesets\n";
   print "  -L|--long-list Long list configured rulesets\n";
   print "  -s|--shell     Run rover config shell\n";
-  print "  -f|--forks n   Use 'n' forks/threads in parallel for host processing\n";
-  print "                 Default is $Rover::parallel_process_count.\n";
-  print "  -t|--threads   Enable threads.  Default is to not use threads. See NOTES\n";
-  print "                 section of Rover perl documentation for more on threads.\n";
+  print "  -R|--root      Run as root\n";
+  print "  -f|--forks n   Use 'n' threads in parallel for host processing\n";
+  print "                 Default is ". $rover->max_threads .".\n";
   print "  -v|--verbose   Turns up verbosity (more -v means more verbose).\n";
   print "  -d|--debug     Turns debug mode on for Rover and Expect.\n";
   print "  -h|--help      Print this help message\n";
+  print "\n";
+  print "  -u|--upgrade   Upgrade hosts and rulesets from previous version\n";
   print "\n";
   print "  --no-auth      Dont ask for passwords prior to running\n";
   print "  --no-banner    Dont display banner\n";
@@ -156,21 +194,223 @@ sub usage {
   return(1);
 }
 
+sub run_upgrade {
+# Upgrade from previous version
+#
+  my $rover = shift;
+  my $r = new Rover;
+
+  $r->config_file($rover->config_file);
+  $r->logs_dir($rover->logs_dir);
+  $r->max_threads($rover->max_threads);
+  $r->debug($rover->debug);
+
+ # Confirm that an upgrade is what we want to do
+ #
+  print "\nWarning: This will overwrite current Rover configuration\n";
+  print "\nContinue [y/N]: ";
+
+  my $answer = lc(<>);
+  chomp $answer;
+  if ( $answer ne 'y' && $answer ne 'yes' ) { exit(0); }
+
+ # Check that the config.run and hosts.txt file exist
+ #
+  if ( ! stat($ENV{'HOME'}."/.rover/hosts.txt") || ! stat($ENV{'HOME'}."/.rover/config.run") ) {
+    print "\nError: Full configuration not found at \"$ENV{'HOME'}/.rover\".\n";
+    print "Make sure the following files from a previous Rover install exist:\n";
+    print "\t$ENV{'HOME'}/.rover/config.run\n";
+    print "\t$ENV{'HOME'}/.rover/hosts.txt\n";
+    print "\n";
+    exit(1);
+  }
+
+ # Read in hosts information, split out columns, store for later use
+ #
+  my @OLD_HOSTS = ();
+  open(OLD_HOSTS, $ENV{'HOME'}."/.rover/hosts.txt");
+  while (<OLD_HOSTS>) {
+    chomp $_;
+    my @host_info = split(/,/, $_);
+
+    push (@OLD_HOSTS, \@host_info);
+  }
+  close(OLD_HOSTS);
+
+  my $max_column = 1;
+  foreach my $href ( @OLD_HOSTS ) {
+    if ( $max_column < @{$href} ) {
+      $max_column = @{$href};
+    }
+  }
+
+  my $os_col = undef;
+  my $user_col = undef;
+  my $desc_col = undef;
+
+ # If we have more then one column in hosts.txt, ask if we want to use that information
+ # when defining the host object
+ #
+  if ( $max_column > 1 ) {
+    print "\nYour hosts.txt file has multiple columns, would you like to add these\n";
+    print "columns to the host details?: [Y/n]: ";
+    $answer = lc(<>);
+    chomp $answer;
+
+    if ( $answer ne "n" && $answer ne "no" ) {
+      print "\nHostname       ";
+      for (my $i=1; $i<$max_column; $i++) {
+        my $j = $i+1;
+        print "#$j-UNDEFINED   ";
+      }
+      print "\n";
+
+      for (my $i=1; $i<5; $i++) {
+        for (my $j=0; $j<$max_column; $j++) {
+          print substr($OLD_HOSTS[$i]->[$j]." "x14,0,14) ." ";
+        }
+        print "\n";
+      }
+
+      print "\nOS Column #: ";
+      $answer = <>; chomp $answer;
+      if ( $answer =~ m/[2-$max_column]/ ) { $os_col = $answer; }
+
+      print "Username Column #: ";
+      $answer = <>; chomp $answer;
+      if ( $answer =~ m/[2-$max_column]/ ) { $user_col = $answer; }
+
+      print "Description Column #: ";
+      $answer = <>; chomp $answer;
+      if ( $answer =~ m/[2-$max_column]/ ) { $desc_col = $answer; }
+    }
+  }
+  print "\n";
+
+ # Actually add the hosts to Rover, with column data if specified
+ #
+  foreach my $href (@OLD_HOSTS) {
+    print "Adding host: ". substr($href->[0] ."."x14, 0, 14) ;
+    $r->add_hosts($href->[0]);
+    my $host_obj = $r->host($href->[0]);
+
+    if ( $host_obj ) {
+      print "done\n";
+      if ( $os_col ) {
+        $host_obj->os( $href->[$os_col-1] );
+        print "\tUpdating OS: ". $href->[$os_col-1] ."\n" if $r->debug;
+      }
+      if ( $user_col ) {
+        $host_obj->username( $href->[$user_col-1] );
+        print "\tUpdating Username: ". $href->[$user_col-1] ."\n" if $r->debug;
+      }
+      if ( $desc_col ) {
+        $host_obj->description( $href->[$desc_col-1] );
+        print "\tUpdating Description: ". $href->[$desc_col-1] ."\n" if $r->debug;
+      }
+    } else {
+      print "failed\n";
+    }
+  }
+  print "\n";
+
+ # Read the old config.run and grab ruleset data.  Add it to Rover object
+ #
+  open(OLD_CONFIG, $ENV{'HOME'} ."/.rover/config.run");
+  my $current_ruleset = undef;
+  my $current_ruleset_obj = undef;
+  while (<OLD_CONFIG>) {
+    chomp $_;
+  
+    next if m/^[\w]+:[\w]+;$/ ;
+    next if m/^[  ]*$/ ;
+  
+   # We are currently reading a ruleset
+    if ( $current_ruleset ) {
+
+     # End of ruleset definition
+      if ( m/^[   ]*\};[  ]*$/ ) {
+        print "done\n" if $current_ruleset_obj;
+
+        $current_ruleset = undef;
+        $current_ruleset_obj = undef;
+      }
+  
+     # We found a rule definition for this ruleset
+      if ( m/^[\s\t]*([\w]+)\((.+)\);[\s\t]*$/ ) {
+        next if ! $current_ruleset_obj ;
+        my $method = $1;
+        my $args = $2;
+
+       # Convert userdel and groupdel to execute statements
+        if ( $method eq "userdel" || $method eq "groupdel" ) {
+          print "\tWarning: $method being converted to execute\n";
+          $args = "$method $args";
+          $method = "execute";
+        }
+
+       # Sorry, userlist and grouplist no longer included
+        if ( $method eq "userlist" || $method eq "grouplist" ) {
+          print "\tWarning: $method not implemented in Rover 3.0, ruleset will probably fail.\n";
+        }
+        print "\trule: $method($args);\n" if $r->debug();
+        $current_ruleset_obj->add($method, $args);
+      }
+      next;
+    }
+  
+   # We found the start of a ruleset definition, exclude GENERAL ruleset
+    if ( m/^[     ]*([\w]+):{[    ]*$/ ) {
+      $current_ruleset = $1;
+      next if $current_ruleset eq "GENERAL";
+
+      print "Adding ruleset: ". substr($current_ruleset ."."x20,0,20) ;
+      $r->add_rulesets($current_ruleset);
+      $current_ruleset_obj = $r->ruleset($current_ruleset);
+      if ( ! $current_ruleset_obj ) {
+        print "failed\n";
+      }
+    }
+  }
+  close OLD_CONFIG ;
+  print "\n";
+
+ # Back up old config file, save new one
+ #
+  print "Saving old config...";
+  if ( system("cp ". $r->config_file ." ". $r->config_file .".bak >/dev/null 2>&1") == 0 ) {
+    print "done\n";
+  } else {
+    print "failed\n";
+  }
+  
+  print "Saving new config...";
+  if ( $r->save() ) {
+    print "done\n";
+  } else {
+    print "failed\n";
+  }
+}
+
 sub pick_hosts {
 # Pick hosts interactively.
 #
-  my $term = new Term::ReadLine 'Pick Hosts';
+  my $rover = shift;
 
-  my $cols = 3;
   my $rows = 15;
   my $position = 0;
 
-  my $host_count = @Rover::hosts_list;
-  my @selected_hosts = (1)x$host_count;
+  my @host_list = sort $rover->host();
+  my @host_list_final = ();
+  my $host_count = @host_list;
+
+  my %selected_hosts = ();
+  foreach (@host_list) { $selected_hosts{$_} = 1; }
 
   my $prompt_help = "<U>=Up  <D>=Down  <T>=Top  <B>=Bottom\n";
   $prompt_help .=   "<#>=Toggle Entry  <+>=Select All  <->=Deselect All\n";
   $prompt_help .=   "<#:#+>=Select A Range  <#:#->=Deselect A Range  <O>=Ok  <C>=Cancel\n";
+  $prompt_help .=   "<SH>=Sort by Host  <SO>=Sort by OS  <SD>=Sort by Description\n";
 
   my $prompt = "pick> ";
 
@@ -178,23 +418,26 @@ sub pick_hosts {
 	U => sub {
 	  # Scroll down one page of hosts, unless we are at the end
 	  #
-		my $tmp_pos = $position - $cols*$rows ;
+		my $tmp_pos = $position - $rows ;
 		if ( $tmp_pos >= 0 ) {
 		  $position = $tmp_pos;
 		}
+		return(1);
 	},
 	D => sub {
 	  # Scroll up one page of hosts, unless we are at the beginning
 	  #
-		my $tmp_pos = $position + $cols*$rows ;
+		my $tmp_pos = $position + $rows ;
 		if ( $tmp_pos <= $host_count ) {
 		  $position = $tmp_pos;
 		}
+		return(1);
 	},
 	T => sub {
 	  # Start at the begining of the list
 	  #
 		$position = 0;
+		return(1);
 	},
 	B => sub {
 	  # Scroll to the last page of the list
@@ -202,27 +445,47 @@ sub pick_hosts {
 		my $tmp_pos = 0;
 		while ($tmp_pos < $host_count) {
 		  $position = $tmp_pos;
-		  $tmp_pos += $cols*$rows;
+		  $tmp_pos += $rows;
 		}
+		return(1);
+	},
+	SH => sub {
+	  # Sort by hostname
+	  #
+		@host_list = sort $rover->host();
+		return(1);
+	},
+	SO => sub {
+	  # Sort by OS
+	  #
+		@host_list = sort { $rover->host($a)->os cmp $rover->host($b)->os } $rover->host();
+		return(1);
+	},
+	SD => sub {
+	  # Sort by description
+	  #
+		@host_list = sort { $rover->host($a)->description cmp $rover->host($b)->description } $rover->host();
+		return(1);
 	},
 	'+' => sub {
 	  # Select all hosts
 	  #
-		@selected_hosts = (1)x$host_count;
+		foreach my $host (keys %selected_hosts) { $selected_hosts{$host} = 1; }
+		return(1);
 	},
 	'-' => sub {
 	  # Deselect all hosts
 	  #
-		@selected_hosts = (0)x$host_count;
+		foreach my $host (keys %selected_hosts) { $selected_hosts{$host} = 0; }
+		return(1);
 	},
 	O => sub {
 	  # Accept the current selection and continue
 	  #
-		my @host_list = @Rover::hosts_list;
-		@Rover::hosts_list = ();
-		for (my $i=0; $i<$host_count; $i++) {
-		  if ( $selected_hosts[$i] ) { push(@Rover::hosts_list,$host_list[$i]); }
+		foreach my $host (keys %selected_hosts) {
+		  if ( $selected_hosts{$host} ) { push(@host_list_final, $host); }
 		}
+		return(1);
 	},
 	C => sub {
 	  # Quit outright
@@ -233,40 +496,40 @@ sub pick_hosts {
 	  # Print a menu of hosts begining at our current position.
 	  #
 		my $hosts_to_print = $host_count - $position;
-		if ( $hosts_to_print > ($cols*$rows) ) { $hosts_to_print = ($cols*$rows) };
+		if ( $hosts_to_print > ($rows) ) { $hosts_to_print = $rows };
 
 		print "\n";
 
-		my $j=1;
 		my $k=1;
 		my $cur_position = $position;
 		for (my $i=$position; $i< ($position+$hosts_to_print); $i++) {
-		  if ( $j > $cols ) {
-		    print "\n";
-		    $k++;
-
-		    $j=1;
-		  }
-
 		  my $selected = " ";
-		  if ( $selected_hosts[$cur_position] ) { $selected = "X"; };
-		  print "\t[$selected] $cur_position. ". substr($Rover::hosts_list[$cur_position]." "x14,0,14);
+		  if ( $selected_hosts{ $host_list[$cur_position] } ) { $selected = "X"; };
+		  print "\t[$selected] ". substr($cur_position."."." "x6,0,6) . substr($host_list[$cur_position]." "x14,0,14) ;
+
+		  my $host_obj = $rover->host($host_list[$cur_position]);
+		  print substr($host_obj->os()." "x8,0,8) . substr($host_obj->description()." "x20,0,20) ;
+		  print "\n";
 
 		  $cur_position++;
-		  $j++;
+		  $k++;
 		}
-		for ($k; $k<$rows; $k++) {print "\n";}
+		for ( ; $k<$rows; $k++) {print "\n";}
 
 		print "\n\n". $prompt_help;
+		return(1);
 	},
   );
 
   system("clear");
   &{$callbacks{print_list}};
+  print "\n$prompt";
 
-  while ( defined (my $comm = uc($term->readline($prompt))) ) {
-
+  while ( <> ) {
+    my $comm = $_ ;
+    chomp $comm;
     $comm =~ m/^(\d+)[:]*(\d*)(\W*)$/;
+
     my ($start_pos, $end_pos, $identifier) = ($1, $2, $3);
 
     if ( $comm eq "O" ) {
@@ -277,7 +540,7 @@ sub pick_hosts {
     }
     system("clear");
 
-    if ( $start_pos ) {
+    if ( $start_pos >= 0 && $start_pos ne "" ) {
      # If we found a number, we want to select/deselect/toggle the range
      #
       my $add = 1;
@@ -292,18 +555,18 @@ sub pick_hosts {
          # We didnt find an identifier, toggle range instead
          #
           for (my $i=$start_pos; $i<=$end_pos; $i++) {
-            $selected_hosts[$i] = abs($selected_hosts[$i]-1);
+            $selected_hosts{ $host_list[$i] } = abs($selected_hosts{ $host_list[$i] } -1);
           }
         } else {
          # Select or deselect hosts based on identifier
          #
-          for (my $i=$start_pos; $i<=$end_pos; $i++) { $selected_hosts[$i] = $add; }
+          for (my $i=$start_pos; $i<=$end_pos; $i++) { $selected_hosts{ $host_list[$i] } = $add; }
         }
 
       } else {
        # Only chose one number, toggle that number
        #
-        $selected_hosts[$start_pos] = abs($selected_hosts[$start_pos]-1);
+        $selected_hosts{ $host_list[$start_pos] }  = abs($selected_hosts{ $host_list[$start_pos] }-1);
       }
 
     }
@@ -312,41 +575,45 @@ sub pick_hosts {
       &{$callbacks{$comm}} ;
     }
 
-    $term->addhistory($_) if /\S/;
     &{$callbacks{print_list}} ;
+    print "\n$prompt";
     next;
   }
   print "\n";
 
+  return @host_list_final;
 }
 
 sub report_completion_status {
 # Print completion report
 #
-  my $count_failed_hosts = @Rover::report_failed_hosts + (@Rover::hosts_list - @Rover::global_process_completed_hosts);
-  if ( $count_failed_hosts ) {
-    my $total_hosts = @Rover::hosts_list;
-    my $hosts_not_completed = @Rover::hosts_list - @Rover::global_process_completed_hosts;
+  my $rover = shift;
+
+  my %status = $rover->run_status();
+  my $count_failed_hosts = $status{"failed_hosts"};
+  if ( @{$count_failed_hosts} ) {
+    my $total_hosts = $status{"num_hosts"};
+    my $hosts_not_completed = $total_hosts - $status{"num_succeed"} - @{$status{"failed_hosts"}} ;
 
     print "\n-------------------\n";
     print "   FAILURE COUNT\n";
     print "-------------------\n";
-    print "Bad Passwords   : $Rover::report_failed_password\n";
-    print "Root Failures   : $Rover::report_failed_root\n";
-    print "Profile Errors  : $Rover::report_failed_profile\n";
-    print "Network Errors  : $Rover::report_failed_network\n";
-    print "Failed Rulesets : $Rover::report_failed_runrules\n";
+    print "Bad Passwords   : ". $status{"failed_password"} ."\n";
+    print "Root Failures   : ". $status{"failed_getroot"} ."\n";
+    print "Profile Errors  : ". $status{"failed_profile"} ."\n";
+    print "Network Errors  : ". $status{"failed_network"} ."\n";
+    print "Failed Rulesets : ". $status{"failed_ruleset"} ."\n";
     if ( $hosts_not_completed ) {
       print "\n";
       print "Canceled        : $hosts_not_completed\n";
     }
     print "-------------------\n";
-    print "Total: $count_failed_hosts\n";
+    print "Total: ". @{$count_failed_hosts} ."\n";
     print "\n";
 
-    if ( $Rover::debug ) {
+    if ( $rover->debug() ) {
       print "Failed hosts:\n";
-      foreach (@Rover::report_failed_hosts) { print "$_\n"; }
+      foreach ( @{$status{"failed_hosts"}} ) { print "$_\n"; }
       print "\n";
     }
   } else {
@@ -356,52 +623,31 @@ sub report_completion_status {
   return(1);
 }
 
-sub sigint_interrupt_handler {
-# If we interrupt the running process, send a message to the watcher
-#
-  if ( ! $Config{useithreads} && ! $Rover::use_threads ) {
-    system("stty echo") ;
-
-    if ( $Rover::ipc_msg ) {
-      $Rover::ipc_msg->snd(1000,":STOP_PROCESSING::\n",0);
-    }
-  } else {
-    report_completion_status();
-    exit(0);
-  }
-
-  return(0);
-}
-
-sub clear_rulesets {
-# Remove preconfigured rulesets
-#
-  foreach my $os (@Rover::OS_TYPES) {
-    my $os_name = "Rover::$os";
-    @$os_name = ();
-  }
-
-}
-
 sub list_rulesets {
 # List rulesets
 #
+  my $rover = shift;
   my @list_rulesets = ();
   if ( @rulesets ) {
     @list_rulesets = @rulesets ;
   } else {
-    @list_rulesets = keys %Rover::rulesets ;
+    @list_rulesets = $rover->ruleset();
   }
 
-  foreach my $ruleset (@list_rulesets) {
-    if ( ! $Rover::rulesets{$ruleset} ) {
-      Rover::pwarn("Warning: Ruleset $ruleset does not exist\n");
+  foreach my $ruleset ( sort @list_rulesets) {
+    my $ruleset_obj = $rover->ruleset($ruleset);
+    if ( ! $ruleset_obj ) {
+      $rover->pwarn("Warning: Ruleset $ruleset does not exist\n");
       next;
     }
 
-    print "$ruleset\n";
+    print "$ruleset";
+    if ( $ruleset_obj->description ) {
+      print "\t- ". $ruleset_obj->description ;
+    }
+    print "\n";
     if ( $list_rulesets_long ) {
-      foreach my $rule ( @{$Rover::rulesets{$ruleset}} ) {
+      foreach my $rule ( $ruleset_obj->list ) {
         print "\t$rule\n";
       }
       print "\n";
@@ -412,29 +658,39 @@ sub list_rulesets {
 sub shell {
 # Interactively run ruleset configuration tool.
 #
-  my $term = new Term::ReadLine 'Rover Ruleset Config';
-  my $prompt = "rover> ";
-  my $out = $term->OUT || \*STDOUT;
+  my ($rover) = @_;
 
+  my $prompt = "rover> ";
   my %callbacks = (
 	list => sub {
 	  # List rulesets
 	  #
-		my ($term, @args) = @_ ;
+		my ($rover, @args) = @_ ;
 		if ( @args ) {
 		  foreach my $regex ( @args ) {
-		    my @rulesets = grep(/$regex/, (keys %Rover::rulesets));
-		    foreach my $ruleset ( @rulesets ) {
-		      print "$ruleset\n";
-		      foreach my $rule (@{$Rover::rulesets{$ruleset}}) {
+		    my @all_rulesets = $rover->ruleset;
+		    foreach my $ruleset ( grep(/$regex/, @all_rulesets) ) {
+		      my $ruleset_obj = $rover->ruleset( $ruleset );
+		      my $description = $ruleset_obj->description();
+
+		      print "$ruleset";
+		      print " - $description" if $description;
+		      print "\n";
+
+		      foreach my $rule ( $ruleset_obj->list() ) {
 		        print "\t$rule\n";
 		      }
 		    }
 		  }
 		  print "\n";
 		} else {
-		  foreach my $ruleset (keys %Rover::rulesets) {
-		    print "$ruleset\n";
+		  foreach my $ruleset ($rover->ruleset) {
+		    my $ruleset_obj = $rover->ruleset( $ruleset );
+		    my $description = $ruleset_obj->description();
+
+		    print "$ruleset";
+		    print "\t- $description" if $description;
+		    print "\n";
 		  }
 		  print "\n";
 		}
@@ -442,7 +698,7 @@ sub shell {
 	del => sub {
 	  # Delete a ruleset
 	  #
-		my ($term, @args) = @_ ;
+		my ($rover, @args) = @_ ;
 
 		if ( ! @args ) {
 		  print "Usage: del RULESET or /REGEX/\n";
@@ -451,19 +707,20 @@ sub shell {
 
 		my @rulesets_to_delete = ();
 		foreach my $regex (@args) {
-		  @rulesets_to_delete = (@rulesets_to_delete, grep(/$regex/, (keys %Rover::rulesets)));
+		  @rulesets_to_delete = (@rulesets_to_delete, grep(/$regex/, ($rover->ruleset())));
 		}
 
 		if ( ! @rulesets_to_delete ) {
+		  print "No ruleset(s) found\n";
 
 		} else {
-		  print "Delete following ruleset: @rulesets_to_delete\n";
+		  print "Delete following ruleset(s): @rulesets_to_delete\n";
 		  print "[ Yes | no ]? ";
 		  my $answer = <>;
 
 		  if ( $answer =~ /[yY]/ ) {
 		    foreach my $ruleset (@rulesets_to_delete) {
-		      delete $Rover::rulesets{$ruleset} ;
+		      $rover->del_rulesets( @rulesets_to_delete );
 		    }
 		  }
 		}
@@ -473,150 +730,152 @@ sub shell {
 	new => sub {
 	  # Create a new ruleset
 	  #
-		my ($term, $name) = @_ ;
+		my ($rover, $name) = @_ ;
 
-		while ( ! $name ) {
-		  print "Name of ruleset: ";
-
-		  $name = <>;
-		  chomp $name;
+		if ( ! $name ) {
+		  print "Usage: new <ruleset>\n";
+		  return(1);
 		}
 
-		my ($fh, $filename) = tmpnam();
+		if ( $rover->ruleset( $name ) ) {
+		  print "Error: Ruleset already exists\n";
+		  return(1);
+		}
 
-		system("vi $filename");
+		my ($fh, $filename);
+		do { $filename = tmpnam() } until $fh = IO::File->new($filename, O_RDWR|O_CREAT|O_EXCL);
 
-		my @tmp_array = ();
+		my $editor = "vi";
+		if ( $ENV{"EDITOR"} ) {
+		  $editor = $ENV{"EDITOR"};
+		}
+		system("$editor $filename");
+
+		$rover->add_rulesets( $name );
+		my $ruleset_obj = $rover->ruleset( $name );
+
+		$fh->autoflush(1);
+		seek($fh, 0, 0);
+		unlink $filename;
+
 		while (<$fh>) {
 		  chomp $_;
-		  push(@tmp_array, $_);
-		}
+		  if ( ! m/^[    ]*([\w]+)[      ]*\((.+)\);/ ) { print "Error in line: $_\n"; next; }
+		  my ($command, $args) = ($1, $2);
 
-		$Rover::rulesets{$name} = \@tmp_array;
+		  $ruleset_obj->add($command, $args);
+		}
+		close ($fh);
 	},
 	edit => sub {
 	  # Edit an existing ruleset
 	  #
-		my ($term, $name) = @_ ;
+		my ($rover, $name) = @_ ;
 
-		while ( ! $name ) {
-		  print "Name of ruleset: ";
-
-		  $name = <>;
-		  chomp $name;
+		if ( ! $name ) {
+		  print "Usage: edit <ruleset>\n";
+		  return(1);
 		}
 
-		if ( ! @{$Rover::rulesets{$name}} ) {
+		if ( ! $rover->ruleset( $name ) ) {
 		  print "Ruleset $name does not exist, use 'new $name' to create\n";
-		  return(0);
+		  return(1);
 		}
+		my $ruleset_obj = $rover->ruleset( $name );
 
-		my ($fh, $filename) = tmpnam();
-		foreach ( @{$Rover::rulesets{$name}} ) {
+		my ($fh, $filename);
+		do { $filename = tmpnam() } until $fh = IO::File->new($filename, O_RDWR|O_CREAT|O_EXCL);
+
+		foreach ( $ruleset_obj->list() ) {
 		  print $fh $_ ."\n";
 		}
 
-		close($fh);
-		open($fh, $filename);
-
+		$fh->autoflush(1);
 		system("vi $filename");
 
-		my @tmp_array = ();
+		$fh->autoflush(1);
+		seek($fh, 0, 0);
+		unlink $filename;
+
+		$ruleset_obj->clear();
 		while (<$fh>) {
 		  chomp $_;
-		  push(@tmp_array, $_);
-		}
+		  if ( ! m/^[    ]*([\w]+)[      ]*\((.+)\);/ ) { print "Error in line: $_\n"; next; }
+		  my ($command, $args) = ($1, $2);
 
-		$Rover::rulesets{$name} = \@tmp_array;
-		unlink($filename);
+		  $ruleset_obj->add($command, $args);
+		}
+		close($fh);
 	},
 	runlist => sub {
 	  # Print all rulesets configured on all OS's
 	  #
-		foreach my $os ( @Rover::OS_TYPES ) {
-		  my $os_name = "Rover::$os";
-		  if ( ! @$os_name ) { next; }
-		  print "$os - @$os_name\n";
+		foreach my $ruleset ( @rulesets ) {
+		  my $ruleset_obj = $rover->ruleset( $ruleset );
+		  my @tmp_array = $ruleset_obj->os_list();
+		  @tmp_array = ("ALL") if ! @tmp_array;
+		  print "$ruleset\t: @tmp_array\n";
 		}
 		print "\n";
 	},
 	runmod => sub {
 	  # Modify the runlist
 	  #
-		my ($term, $os) = @_ ;
+		my ($rover) = @_ ;
 
-		if ( ! $os ) {
-		  print "Usage: runmod OS\n";
-		  print "where OS is one of: @Rover::OS_TYPES \n\n";
-		  return(0);
-		}
+		print "Current Runlist:\n";
+		foreach my $ruleset (@rulesets) { print "$ruleset\n"; }
 
-		if ( ! grep(/^$os$/, @Rover::OS_TYPES) ) {
-		  print "OS $os does not exist\n\n";
-		  return(0);
-		}
+		my @all_rulesets = $rover->ruleset();
+		print "\nAvailable Rulesets: @all_rulesets\n\n";
 
-		print "Change runlist for $os:\n";
-		print "\n";
-		print "Chose one or more of the following rulesets, enter blank line to finish\n";
-		foreach my $ruleset (keys %Rover::rulesets) {
-			print "$ruleset\n";
-		}
+		print "Enter rulest names one at a time, enter blank line to finish\n";
+		my @new_rulesets = ();
+		print "ruleset> ";
+		while (<>) {
+		  last if /^$/;
+		  chomp $_;
 
-		my $os_name = "Rover::$os";
-		@$os_name = ();
-
-		print "\n";
-		while ( defined ($_ = $term->readline("$os> ")) ) {
-		  last if /^$/ ;
-
-		  if ( ! $Rover::rulesets{$_} ) {
-		    print "Ruleset $_ does not exist, this will not be added\n";
-		  } else {
-		    push(@$os_name, $_);
+		  if ( ! $rover->ruleset( $_ ) ) {
+		    print "\nRuleset $_ does not exist, aborting with no changes\n";
+		    @new_rulesets = ();
+		    last;
 		  }
+		  push (@new_rulesets, $_);
+		  print "ruleset> ";
 		}
-		print "\n";
-	},
-	config => sub {
-	  # Print the Rover config variables
-	  #
-		foreach my $var (@Rover::config_vars) {
-		  my $var_name = $var;
-		  $var_name =~ s/^.// ;
-		  if ( $var =~ m/^\@/ ) {
-		    print "\t$var = qw( @$var_name )\n";
-
-		  } elsif ( $var =~ m/^\$/ ) {
-		    print "\t$var = $$var_name\n";
-		  }
+		if ( ! @new_rulesets ) {
+		  print "\nNo changes made\n";
+		} else {
+		  print "\nNew runlist:\n";
+		  foreach my $ruleset (@new_rulesets) { print "$ruleset\n"; }
+		  @rulesets = @new_rulesets;
 		}
 		print "\n";
 	},
 	hosts => sub {
 	  # List the hosts configured to run
 	  #
-		foreach my $host ( @Rover::hosts_list ) {
-		  print "$host\n";
+		print "Hostname        OS\n";
+		print "--------------------\n";
+		foreach my $host ( sort( $rover->host() ) ) {
+		  my $host_obj = $rover->host($host);
+		  printf "%.15s %s\n", $host ." "x15, $host_obj->os;
 		}
 		print "\n";
 	},
-	hostsmod => sub {
-	  # Modify the hosts_list file and reload afterwards
-	  #
-		system("vi $Rover::hosts_file");
-		$Rover::hosts_list = ();
-		Rover::load_hosts;
-	},
-	save => sub { Rover::save_config(); },
+	save => sub { my $rover = shift; $rover->save(); },
 	  # Save the current configuration
 	  #
 	mods => sub {
 	  # List the registered modules
 	  #
-		foreach my $mod (keys %Rover::registered_modules) {
+		my $rover = shift;
+		foreach my $mod ( $rover->registered_modules() ) {
 		  print "$mod\n";
-		  my $mod_exported = $mod ."::EXPORT";
+		  foreach my $rule ( $rover->registered_rules($mod) ) {
+		    print "\t$rule\n";
+		  }
 		}
 		print "\n";
 	},
@@ -624,41 +883,24 @@ sub shell {
 	  # Print the values of registered variables for a specific module,
 	  # or print them all if no argument is supplied
 	  #
-		my ($term, @args) = @_ ;
+		my ($rover, @args) = @_ ;
 
 		if ( ! @args ) {
-		  print "Usage: del RULESET or /REGEX/\n";
+		  print "Usage: vars RULESET or /REGEX/\n";
 		  return(0);
 		}
 
 		my @modules = ();
 		foreach my $regex (@args) {
-		  @modules = (@modules, grep(/$regex/, (keys %Rover::registered_modules)));
+		  @modules = (@modules, grep(/$regex/, $rover->registered_modules() ));
 		}
 
 		foreach my $mod (@modules) {
 		  print "$mod\n";
-		  foreach my $var (@{$Rover::registered_vars{$mod}}) {
+		  foreach my $var ($rover->registered_vars( $mod ) ) {
 		    my $var_name = $var;
 		    $var_name =~ s/^.// ;
-		    if ( $var =~ m/^\@/ ) {
-		      print "\t$var = qw( @$var_name )\n";
-
-		    } elsif ( $var =~ m/^\$/ ) {
-		      print "\t$var = $$var_name\n";
-		    }
-		  }
-		}
-		print "\n";
-	},
-	commands => sub {
-	  # Print out the exported commands available for rulesets
-	  #
-		foreach my $module_name (keys %Rover::registered_modules ) {
-		if ( ! @{ $Rover::registered_modules{$module_name} } ) { next; }
-		print "$module_name\n";
-		  foreach my $exported_command ( @{ $Rover::registered_modules{$module_name} } ) {
-		    print "\t$exported_command()\n";
+		    print "\t$var\n";
 		  }
 		}
 		print "\n";
@@ -666,7 +908,7 @@ sub shell {
 	eval => sub {
 	  # Evaluate a perl command
 	  #
-		my ($term, @args) = @_ ;
+		my ($rover, @args) = @_ ;
 		eval "@args" ;
 
 		print $@ if $@;
@@ -682,16 +924,13 @@ sub shell {
 		print "\n";
 		print "Run Commands\n";
 		print "  runlist         Display rulesets to be ran by Rover\n";
-		print "  runmod OS       Modify list of rulesets to be ran by OS\n";
+		print "  runmod          Modify list of rulesets to be ran\n";
 		print "\n";
 		print "Rover Commands\n";
-		print "  config          Print values of Rover config variables\n";
 		print "  hosts           Display the targeted hosts\n";
-		print "  hostsmod        Edit and reload the hosts file.\n";
 		print "  save            Saves current configuration\n";
-		print "  mods            Display list of registered modules\n";
-		print "  commands        Display list of exported ruleset commands\n";
-		print "  vars  MODULE    Display variables and values of registered modules\n";
+		print "  mods            Display list of registered modules and commands\n";
+		print "  vars  MODULE    Display variables\n";
 		print "\n";
 		print "Other Commands\n";
 		print "  eval            Evaluate a perl command\n";
@@ -708,20 +947,32 @@ sub shell {
   print "Rover shell -- version $Rover::VERSION\n";
   print "type \"help\" for a list of commands\n";
   print "\n";
+  print $prompt ;
 
-  while ( defined ($_ = $term->readline($prompt)) ) {
+  while ( <> ) {
    # Readline loop for interactive shell
    #
+    chomp $_;
     s/^[\s\t]*// ;
+    if ( m/^$/ ) {
+      print $prompt ;
+      next;
+    }
+
     my ($comm, @args) = split(/ /,$_);
 
     last if /quit\s*$/ ;
 
     if ( $callbacks{$comm} ) {
-      &{$callbacks{$comm}}($term, @args);;
+      &{$callbacks{$comm}}($rover, @args);;
+
+    } else {
+      print "command not found: $comm\n";
+      print "type \"help\" for a list of commands\n";
+      print "\n";
     }
 
-    $term->addhistory($_) if /\S/;
+    print $prompt ;
     next;
   }
   print "\n";
@@ -731,158 +982,102 @@ sub shell {
 sub read_authentication {
 # Gather user auth and privilage auth information
 #
-  print STDERR $Rover::user,"'s password: ";
+  my $rover = shift;
+
+  print STDERR $rover->user,"'s password: ";
   system("stty -echo");
   my $user_pass = <STDIN>;
   chomp $user_pass;
+
+  my @passwords = ();
   while ( $user_pass ne "" ) {
     print STDERR "\n";
-    push(@Rover::user_credentials, $user_pass);
+    push(@passwords, $user_pass);
   
-    print STDERR $Rover::user,"'s password: ";
+    print STDERR $rover->user,"'s password: ";
     $user_pass = <STDIN>;
     chomp $user_pass;
   }
   print STDERR "\n";
-  system("stty echo");
-  
-  if ( $Rover::root_access_required ) {
-   # We need to get root, store root passwords either with pre-defined
-   # storage routines or from the command line
-   #
-    if ( ! @Rover::root_password_storage_routines ) {
-     # If there are no root password storage routines defined, get a list
-     # of root passwords from the command line.
-     #
-      print STDERR "\nroot's password: ";
-      system("stty -echo");
-      my $root_pass = <STDIN>;
-      chomp $root_pass;
-      while ( $root_pass ne "" ) {
-        print STDERR "\n";
-        push(@Rover::root_password_list, $root_pass);
-  
-        print STDERR "root's password: ";
-        $root_pass = <STDIN>;
-        chomp $root_pass;
-      }
-      print STDERR "\n\n";
-      system("stty echo");
-  
-    } else {
-     # Iterate through root password storage routines until one is successful.
-     # die if all fail.
-     #
-      my $result = 0;
-      foreach my $routine ( @Rover::root_password_storage_routines ) {
-        $result = &$routine();
-  
-        if ( $result ) { last; }
-  
-        print "Warning: root password storage routine failed: '$routine'\n" if $Rover::debug > 1;
-      }
-      if ( ! $result ) {
-      my $result = 0;
-        die "Unable to store root passwords, exiting\n";
-      }
-    }
-  }
-}
+  $rover->user_credentials(@passwords);
 
+  if ( $getroot ) {
+    print STDERR "\n";
+    print STDERR "root's password: ";
+    my $root_pass = <STDIN>;
+    chomp $root_pass;
+
+    my @root_passwords = ();
+    while ( $root_pass ne "" ) {
+      print STDERR "\n";
+      push(@root_passwords, $root_pass);
+
+      print STDERR "root's password: ";
+      $root_pass = <STDIN>;
+      chomp $root_pass;
+    }
+    print STDERR "\n";
+    $rover->root_credentials(@root_passwords);
+  }
+  system("stty echo");
+}
+#
 #****************************************************************************
 # Begin main execution
 #
+my $rover = new Rover;
 
-$SIG{'INT'} = 'sigint_interrupt_handler';
-$SIG{'KILL'} = 'sigint_interrupt_handler';
-$SIG{'HUP'} = 'IGNORE';
-
-# Validate opts, override configuration variables, restore ARGV.
-# By restoring ARGV we can override the default config file, load
-# the config file, then override any options within the config file.
+# Validate opts and load the configuration file
 #
-my @stored_argv = @ARGV;
-if ( ! validate_opts() ) {
+if ( ! validate_opts($rover) ) {
   exit(-1);
 }
-@ARGV = @stored_argv;	# Simple hack to be able to read args in again
+$rover->load();
+validate_opts($rover);  # override config file with specified opts
 
-# Read configuration file, store routines to execute
+# Select random logs dir
 #
-if ( ! load_config() ) {
-  exit(-1);
+my $old_logs_dir = $rover->logs_dir();
+my $new_logs_dir = $rover->logs_dir() ."/". int(rand(999999));
+if ( mkdir($new_logs_dir) ) {
+  $rover->logs_dir( $new_logs_dir );
 }
 
 # Print the rulesets and, optionally, there contents
 #
 if ( $list_rulesets || $list_rulesets_long ) {
-  list_rulesets();
+  list_rulesets($rover);
   exit(0);
-}
-
-# Run this one more time to override config file vars
-# We do a quick clear of the loaded rulesets in case
-# any were specified the first time we ran opts
-#
-@rulesets = ();
-validate_opts();
-
-if ( ! load_hosts() ) {
-  exit(-1);
-}
-
-# If we specified a ruleset from the command line, clear
-# all others we may have read from the config file and use
-# that
-#
-if ( @rulesets ) {
-  clear_rulesets();
-
-  foreach my $ruleset ( @rulesets ) {
-    if ( ! $Rover::rulesets{$ruleset} ) {
-      print "Error: ruleset '$ruleset' has does not exist\n";
-      exit(0);
-    }
-
-    push(@Rover::ALL, $ruleset);
-  }
 }
 
 # Modify the runlist with the quick command specified from the
 # command line
 #
 if ( $quick_command ) {
-  clear_rulesets();
+  my $quick_ruleset = $rover->add_rulesets("Rover_Quick_Ruleset");
+  $quick_ruleset->add("execute", $quick_command);
 
-  my $command = "execute(". $quick_command .");";
-  my @tmp_ruleset = ($command);
-  $Rover::rulesets{'Rover_Quick_Ruleset'} = \@tmp_ruleset;
-
-  push(@Rover::ALL, 'Rover_Quick_Ruleset');
+  @rulesets = ("Rover_Quick_Ruleset");
 }
 
 # Run shell after all options are parsed
 #
 if ($shell) {
-  shell();
+  shell($rover);
+}
+
+@hosts = $rover->host();
+# Allow user to pick hosts from a menu
+#
+if ( $pick_hosts ) {
+  @hosts = pick_hosts($rover);
 }
 
 # Make sure we have something to do before continuing
 #
-my @total_rulesets = ();
-foreach my $os ( @Rover::OS_TYPES ) {
-  my $os_name = "Rover::$os";
-  @total_rulesets = (@total_rulesets,@$os_name) ;
-}
-if ( ! @total_rulesets ) {
+if ( ! @rulesets || ! @hosts ) {
   print "\nNothing to do, exiting\n\n";
   exit(1);
-}
-
-# Allow user to pick hosts from a menu
-#
-if ( $pick_hosts ) {
-  pick_hosts();
 }
 
 # Display a brief banner about what we are going to do
@@ -891,37 +1086,55 @@ if ( $banner ) {
   my @bool_text = ('No', 'Yes');
 
   print "\nRunning rulesets:\n";
-  foreach my $os ( @Rover::OS_TYPES ) {
-    my $os_name = "Rover::$os";
-    if ( ! @$os_name ) { next ; }
-    print "    $os: @$os_name\n";
+  foreach my $ruleset ( @rulesets ) {
+    my $ruleset_obj = $rover->ruleset($ruleset);
+    my @OS_NAMES = $ruleset_obj->os_list;
+    @OS_NAMES="ALL" if ! @OS_NAMES;
+
+    my $os_text = "@OS_NAMES";
+    $os_text =~ s/ /, /g;
+
+    print "\t$os_text : $ruleset\n";
   }
   print "\n";
 
-  print "    User:  $Rover::user
-    Root:  $bool_text[$Root::root_access_required]
-    Hosts: ". @Rover::hosts_list ;
-  print "\n\n";
 }
 
 # Read in passwords from command line
 #
 if ( $auth ) {
-  read_authentication();
+  read_authentication($rover);
 }
 
 my $start_time = time();
 
 # Start the real work, execute each process individually
 #
-system("rm -rf $Rover::logs_dir/*.log");
-process_hosts();
+$rover->run_rulesets(@rulesets, {'Hosts' => \@hosts, 'Root' => $getroot});
 
 # All completed, report on findings.
 #
-report_completion_status();
+report_completion_status($rover);
 
-print "Finished. Elapsed time: ". (time() - $start_time) ." seconds.\n\n" if $Rover::debug;
+print "Finished. Elapsed time: ". (time() - $start_time) ." seconds.\n\n" ;
+
+# Cleanup old log files
+#
+my %log_dirs = ();
+
+opendir(LOGS, $old_logs_dir);
+foreach my $file (readdir(LOGS)) {
+  if ( ! -d $old_logs_dir ."/". $file ) { next; }
+  if ( $file =~ m/^[\.]+$/ ) { next; }
+
+  my @fstat = stat($old_logs_dir ."/". $file);
+  $log_dirs{$file} = $fstat[10];
+}
+my @dirs = sort { $log_dirs{$b} <=> $log_dirs{$a} } keys %log_dirs;
+if ( @dirs > 10 ) {
+  my @del_dirs = @dirs[10..(@dirs-1)];
+  foreach (@del_dirs) {system("rm -rf $old_logs_dir/$_");}
+}
 
 __END__
 
@@ -931,22 +1144,21 @@ rover - Command line interface to Rover perl module
 
 =head1 SYNOPSYS
 
-rover [-r I<ruleset> [-r I<ruleset> ...]] [-q I<command>]
-      [--hosts-file I<hostfile>] [--config-file I<configfile>]
-      [-p] [-S I<regex>] [-l | -L] [-s] [-f I<processes>] [-t]
-      [-v[v...]] [-h] [--no-auth] [--no-banner] [--version]
+rover [options]  [-q I<command>]  [-r I<ruleset> [-r I<ruleset> ...]]
+
+All Options:
+
+[-r|--ruleset <name>]  [--config-file <file>]  [--logs-dir <dir>]  [-q|--quick-command <command>]  [-S|--search <regex>]  [-p|--pick]  [-l|--list]  [-L|--long-list]  [-s|--shell]  [-f|--forks n]  [-v|--verbose]  [-d|--debug] [-u|--upgrade] [-h|--help]  [--no-auth]  [--no-banner]  [--version]
+
 
 =head1 DESCRIPTION
 
 The rover command uses the perl module Rover to execute pre-defined
 rulesets on multiple hosts in parallel.  From the command line
-one or more I<rulesets> can be specified, overriding the I<configfile>.
+I<rulesets> are specified using the -r flag.
 
 An interactive shell can be entered by suplying the -s flag.  This
 shell is meant to be an easy way to edit rulesets from the command line.
-
-See B<perldoc Rover> for syntax documentation on I<hostfile>
-and I<configfile>.
 
 =head1 USAGE
 
@@ -965,19 +1177,21 @@ be specified.
 
 =back
 
-=item --hosts-file I<hostfile>
-
-=over 8
-
-Use I<hostfile> instead of the default $HOME/.rover/hosts.txt.
-
-=back
-
 =item --config-file I<configfile>
 
 =over 8
 
 Use I<configfile> instead of the default $HOME/.rover/config.run.
+
+=back
+
+=item --logs-dir I<dir>
+
+=over 8
+
+Use I<dir> to store the logs for this run.  Note, this is not the absolute
+path as rover will create subdirectories so that multiple sessions do not
+interfere with each other.
 
 =back
 
@@ -1032,18 +1246,9 @@ You may also use the long options --list and --long-list.
 =over 8
 
 Rover is designed to run many hosts in parallel.  By default it uses
-forked processes to split the hosts up.  The default value of four(4)
-can be overriden with this flag.  If you are instead using threads,
-this is the limit of concurrent threads to use.
-
-=back
-
-=item -t | --threads
-
-=over 8
-
-Use threading instead of forks.  See B<perldoc Rover> for more on
-threads.
+threaded processes to split the hosts up.  The default value of four(4)
+can be overriden with this flag.  The name forks is kept for backwards
+compatiblity, forked processes are no longer used.
 
 =back
 
@@ -1061,7 +1266,7 @@ as the name implies, a regular expression string.
 =over 8
 
 Turn up verbosity.  More -v means more verbose.  What this actually does
-is increment $Rover::debug, which by default is 0.
+is increment $rover->debug, which by default is 0.
 
 =back
 
@@ -1081,6 +1286,22 @@ host is used as Rover debug + Expect debug is really noisy.
 =over 8
 
 Print help message.
+
+=back
+
+=item -u | --upgrade
+
+=over 8
+
+Upgrade from previous version of Rover.  This will overwrite your current configuration.
+You will be prompted for input during the actual upgrade.
+
+This option reads, specifically, Rover 2.x files.  They included separate hosts and ruleset
+configs.  The ruleset configuration was $HOME/.rover/config.run.  The hosts file was
+$HOME/.rover/hosts.txt.  If you were using multiple colomns in the hosts.txt file, it will prompt you to include
+that in the new config.
+
+See the B<UPGRADING> section for more details
 
 =back
 
@@ -1150,13 +1371,27 @@ rover -S 'up [0-9]+ day'
 
 This example shows how you would set up a batch process with rover. This
 assumes you have some non-password based authentication, like ssh keys,
-and have copied the config and hosts file into the same directory:
+and have copied and modified the config file in a non-standard location.
 
 =over 4
 
-rover --config-file config.run --hosts-file hosts.txt --logs-dir /tmp/mylogsdir --no-auth --no-banner Batch_Commands
+rover --config-file /path/to/config.run --no-auth --no-banner -r Batch_Commands
 
 =back
+
+=head1 UPGRADING
+
+If you are upgrading from Rover 2.x, you can use the -u or --upgrade option.
+This is an interactive process that should bring in all your hosts and rulesets
+from the previous version of Rover.  If you are upgrading from an older version, 
+you can simply copy your config.run and hosts.txt files to the $HOME/.rover
+directory and run the upgrade.
+
+Here are the items not supported by the upgrade option:
+
+  - rover 1.x ruleset logic
+  - Expert mode rulesets
+  - GENERAL settings
 
 =head1 AUTHORS
 
