@@ -97,6 +97,9 @@ sub soft_close {
 
   if ( $self->shell ) {
     $self->shell->send("exit;\n exit;\n exit;\n");
+    $self->shell->send(EOF);
+    $self->shell->send(EOF);
+    $self->shell->send(EOF);
     select(undef, undef, undef, 0.25);
     $self->shell->soft_close();
 
@@ -138,10 +141,10 @@ sub new {
 	_passwords => [ @_ ],
 	_description => undef,
 	_shell => 0,
-	_login_methods => [ ("shell_by_ssh", "shell_by_telnet", "shell_by_rlogin") ],
+	_login_methods => [( )],
 	_login_method_used => undef,
 	_ftp => undef,
-	_ftp_methods => [ ("sftp", "ftp", "rcp") ],
+	_ftp_methods => [( )],
 	_ftp_method_used => undef,
   };
 
@@ -154,4 +157,70 @@ sub new {
 1;
 
 __END__
+
+=head1 NAME
+
+Rover::Host - Host object for the Rover module
+
+=head1 SYNOPSIS
+
+  # Start with the Rover object
+  use Rover;
+  my $r = new Rover;
+
+  # Store the object inside Rover
+  my $host_obj = $r->add_host("host1");
+
+  # Return the hostname of the current host object
+  my $host = $host_obj->hostname();
+
+  # Return or set the OS type
+  my $os = $host_obj->os();
+    or
+  $host_obj->os("OS");
+
+  # Set the username to log into for this host only.
+  # Default is to use $r->user();
+  #
+  $host_obj->username("username");
+
+  # Set the list of passwords to use on this host only.
+  # Default is to use $r->user_credentials
+  #
+  $host_obj->passwords(@password_list);
+
+  # Set the text description for this host.
+  $host_obj->description("Text Description");
+
+  # Return the Expect objects for shell and ftp sessions
+  $host_obj->shell();
+  $host_obj->ftp();
+
+  # Close the Expect objects for this host.  See Expect documentation
+  # for the differences between soft_close and hard_close
+  #
+  $host_obj->soft_close();
+  $host_obj->hard_close();
+
+=head1 DESCRIPTION
+
+Rover::Host is the object class for storing host objects inside Rover.
+
+=head1 AUTHORS
+
+  Bryan A Bueter
+
+=head1 LICENSE
+
+This module can be used under the same terms as Perl.
+
+=head1 DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED ‘‘AS IS’’ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
 

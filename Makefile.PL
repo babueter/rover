@@ -8,8 +8,8 @@ use warnings;
 
 # Dependent perl modules needed to run
 #
-die "\nInstaller not yet complete, please install by hand\n\n";
-my @dependencies = ("IO::Pty", "IO::Tty", "IO::Stty", "Expect", "IPC::SysV");
+my @dependencies = ("IO::Pty", "IO::Tty", "IO::Stty", "Expect", "threads");
+my @needed_to_build = ("ExtUtils::Depends", "ExtUtils::PkgConfig", "Cairo", "Gtk2::GladeXML");
 
 my $use_gtk = 1;
 my $check_deps = 1;
@@ -25,18 +25,24 @@ my $rover_version = MM->parse_version('lib/Rover.pm');
 foreach (@ARGV) {
   if (/^--no-gtk$/) {
     $use_gtk = 0;
-  }
-  if (/^--no-deps$/) {
+  } elsif (/^--no-deps$/) {
     $check_deps = 0;
-  }
-  if (/^--install-deps$/) {
+  } elsif (/^--install-deps$/) {
     $auto_install = 1;
+  } else {
+    print "Error: Unknown option: $_\n";
+    exit 1;
   }
 }
 if ( $use_gtk ) {
-  push(@dependencies, "XML::Parser");
-  push(@dependencies, "XML::Writer");
-  push(@dependencies, "Gtk");
+  push(@dependencies, "Glib");
+  push(@dependencies, "Gtk2");
+  push(@dependencies, "Gtk2::GladeXML");
+}
+
+if (! $Config{useithreads} ) {
+  print "Error: perl was not built with threads support, cannot install\n";
+  exit 1;
 }
 
 my @install_deps = ();
@@ -62,16 +68,11 @@ if ( @install_deps ) {
       exit(1);
     }
     print "\nMissing modules: @install_deps\n\n";
-    foreach my $mod ( @install_deps ) {
+    foreach my $mod ( (@needed_to_build, @install_deps) ) {
       print "Installing $mod via CPAN\n";
 
-      my $obj = CPAN::Shell->expand("Module",$mod);
-
-      if ( $mod eq 'Gtk' ) { CPAN::Shell->o('conf','makepl_arg', '--without-guessing'); }
-      eval{ $obj->install; };
-      if ( $mod eq 'Gtk' ) { CPAN::Shell->o('conf','makepl_arg', ''); }
-
-      if ( ! $obj->inst_version ) { die "\nDid not install $mod successfully\n\n"; }
+      eval{ CPAN::Shell->force("install", $mod); };
+      if ( $@ ) { die "\nDid not install $mod successfully: $@\n\n"; }
     }
 
     print "
@@ -79,6 +80,7 @@ All dependencies have successfully installed , please re-run 'perl Makefile.PL'
 in order to continue with the Rover install.
 
 ";
+    exit(1);
 
   } else {
     print "
@@ -102,16 +104,15 @@ You can automatically install them with --install-deps.
     WriteMakefile(
       NAME              => 'Rover',
       VERSION_FROM      => 'lib/Rover.pm',
-      EXE_FILES         => [ qw(scripts/rover scripts/rovergtk) ],
-      INSTALLSCRIPT     => '/usr/bin',
+      EXE_FILES         => [ qw(scripts/rover scripts/rovergtk scripts/rovergtk.glade) ],
       PREREQ_PM         => {
-	'IPC::SysV' => 1.03,
         'IO::Tty' => 1.02,
         'IO::Stty' => 0.02,
         'Expect' => 1.15,
-        'XML::Parser' => 2.34,
-        'XML::Writer' => 0.600,
-        'Gtk' => 0.7009,
+	'threads' => 1.07,
+	'Glib' => 1.150,
+        'Gtk2' => 1.140,
+        'Gtk2::GladeXML' => 1.006,
       },
       ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
         ('ABSTRACT_FROM'  => 'lib/Rover.pm', # retrieve abstract from module
@@ -123,12 +124,11 @@ You can automatically install them with --install-deps.
       NAME              => 'Rover',
       VERSION_FROM      => 'lib/Rover.pm',
       EXE_FILES         => [ qw(scripts/rover) ],
-      INSTALLSCRIPT     => '/usr/bin',
       PREREQ_PM         => {
-	'IPC::SysV' => 1.03,
         'IO::Tty' => 1.02,
         'IO::Stty' => 0.02,
         'Expect' => 1.15,
+	'threads' => 1.07,
       },
       ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
         ('ABSTRACT_FROM'  => 'lib/Rover.pm', # retrieve abstract from module

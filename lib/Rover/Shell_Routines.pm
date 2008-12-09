@@ -7,7 +7,6 @@
 
 package Rover::Shell_Routines;
 use Exporter;
-use Expect;
 
 $Expect::Log_Stdout = 0;
 
@@ -15,10 +14,10 @@ BEGIN {
   our $VERSION = "1.00";
 
   @Rover::Shell_Routines::ISA = qw( Exporter );
-  @Rover::Shell_Routines::EXPORT = qw( shell_by_ssh shell_by_telnet shell_by_rlogin expect_login );
+  @Rover::Shell_Routines::EXPORT = qw( shell_by_ssh shell_by_telnet shell_by_rlogin expect_login get_root_by_su get_root_by_sudo );
 
-  $Rover::Shell_Routines::ssh_command = "ssh -x";
-  $Rover::Shell_Routines::openssh_args = "-o ConnectTimeout=3 -o ForwardX11=no";
+  $Rover::Shell_Routines::ssh_command = "ssh -x -o ForwardX11=no";
+  $Rover::Shell_Routines::openssh_args = "-o ConnectTimeout=3";
 
   $Rover::Shell_Routines::rlogin_as_self = 0;
   $Rover::Shell_Routines::use_net_telnet = 1;
@@ -29,6 +28,8 @@ BEGIN {
     $Rover::Shell_Routines::use_net_telnet = 0;
   }
 
+  $Rover::Shell_Routines::su_login = 1;
+  $Rover::Shell_Routines::sudo_shell = '/bin/ksh';
 }
 
 sub expect_login {
@@ -63,31 +64,31 @@ sub expect_login {
                   [ 'assword:', sub { $pass = shift @user_credentials;
                         if ( ! $pass ) {
                           $logged_in = 0;
-                          $failure_code = 0;
+                          $failure_code = -1;
                           return(0);
                         }
                         $spawn_ok = 1;
                         my $fh = shift;
-                        select(undef, undef, undef, 0.25);
+                        #select(undef, undef, undef, 0.25);
                         $fh->clear_accum();
                         $fh->send("$pass\n");
-                        select(undef, undef, undef, 0.25);
+                        #select(undef, undef, undef, 0.25);
                         exp_continue; } ],
                   [ 'assphrase', sub { $pass = shift @user_credentials;
                         if ( ! $pass ) {
                           $logged_in = 0;
-                          $failure_code = 0;
+                          $failure_code = -1;
                           return(0);
                         }
                         $spawn_ok = 1;
                         my $fh = shift;
-                        select(undef, undef, undef, 0.25);
+                        #select(undef, undef, undef, 0.25);
                         $fh->clear_accum();
                         $fh->send("$pass\n");
-                        select(undef, undef, undef, 0.25);
+                        #select(undef, undef, undef, 0.25);
                         exp_continue; } ],
-                  [ 'ew password', sub { $logged_in = 0; $failure_code = 0; } ],
-                  [ 'Challenge', sub { $logged_in = 0; $failure_code = 0; } ],
+                  [ 'ew password', sub { $logged_in = 0; $failure_code = -1; } ],
+                  [ 'Challenge', sub { $logged_in = 0; $failure_code = -1; } ],
                   [ 'Microsoft Windows', sub { $logged_in = 1; $self->user_prompt = '\\033\[2'; } ],
                   [ eof => sub { if ($spawn_ok == 1) {
                           $logged_in = 0;
@@ -99,7 +100,7 @@ sub expect_login {
                   [ timeout => sub { if ( ! $changed_prompt && $spawn_ok ) {
                           $changed_prompt = 1;
                           $exp_obj->send("PS1='$self->user_prompt_force'\n\n");
-                          select(undef,undef,undef,0.25);
+                          #select(undef,undef,undef,0.25);
                           exp_continue;
                         } else {
                           $logged_in = 0;
@@ -118,13 +119,15 @@ sub expect_login {
 }
 
 sub shell_by_ssh {
-  my ($self, $host_obj) = @_;
-  return 0 if ! $host_obj;
+  my ($self, $host) = @_;
+  return 0 if ! $host;
+
+  my $host_obj = $self->host($host) || return 0;
 
   $self->pdebug("DEBUG:\tShell_Routine ssh attempting to init shell for '". $host_obj->hostname ."'\n");
-  if ( ! Rover::Core::scan_open_port($host_obj->hostname,"22") ) {
-    $self->pdebug("DEBUG:\t\t$hostname: no ssh port opened\n");
-    return(-2);
+  if ( ! Rover::Core::scan_open_port($host,"22") ) {
+    $self->pdebug("DEBUG:\t\t$host: no ssh port opened\n");
+    return(-3);
   }
 
   my $ssh_command = $Rover::Shell_Routines::ssh_command ;
@@ -140,8 +143,11 @@ sub shell_by_ssh {
   open(SSH_VER,"ssh -V 2>&1 |");
   my $version_line = <SSH_VER>;
   close (SSH_VER);
+  chomp $version_line ;
+  $self->pdebug("DEBUG:\t\tSSH Version: $version_line\n");
 
-  if ( $version_line =~ m/^OpenSSH_3.9/ ) {
+  $version_line =~ m/OpenSSH_([0-9]\.[0-9])/;
+  if ( $1 >= 3.9 ) {
     $ssh_command .= " ". $Rover::Shell_Routines::openssh_args ;
   }
   $ssh_command .= " -l ". $host_obj->username ." ". $host_obj->hostname;
@@ -179,13 +185,15 @@ sub shell_by_ssh {
 }
 
 sub shell_by_telnet {
-  my ($self, $host_obj) = @_;
-  return 0 if ! $host_obj;
+  my ($self, $host) = @_;
+  return 0 if ! $host;
+
+  my $host_obj = $self->host($host) || return 0;
 
   $self->pdebug("DEBUG:\tShell_Routine telnet attempting to init shell for '". $host_obj->hostname ."'\n");
   if ( ! Rover::Core::scan_open_port($host_obj->hostname,"22") ) {
-    $self->pdebug("DEBUG:\t\t$hostname: no ssh port opened\n");
-    return(-2);
+    $self->pdebug("DEBUG:\t\t". $host_obj->hostname .": no ssh port opened\n");
+    return(-3);
   }
 
   my $exp_obj = undef;
@@ -203,7 +211,9 @@ sub shell_by_telnet {
     while ($password && ! $success) {
       $t = new Net::Telnet (Timeout => $self->login_timeout,
 				Prompt => "/". $self->user_prompt ."/",
-				Input_log => $self->logs_dir ."/". $host_obj->hostname .".log");
+				Input_log => $self->logs_dir ."/". $host_obj->hostname .".log",
+				Errmode => "return",
+      );
 
      # We could probably change Errmode on our Net::Telnet so we wouldnt have
      # to eval open and login, but I wasnt sure if I would have to $t->close
@@ -246,13 +256,16 @@ sub shell_by_telnet {
 }
 
 sub shell_by_rlogin {
-  my ($self, $host_obj) = @_;
-  return 0 if ! $host_obj;
+  my ($self, $host) = @_;
+  return 0 if ! $host;
+
+  if ( ! $self->host($host) ) { return 0; }
+  my $host_obj = $self->host($host);
 
   $self->pdebug("DEBUG:\tShell_Routine rlogin attempting to init shell for '". $host_obj->hostname ."'\n");
   if ( !  Rover::Core::scan_open_port($host_obj->hostname,"513") ) {
-    $self->pdebug("DEBUG:\t\t$hostname: no rlogin port opened\n");
-    return(-2);
+    $self->pdebug("DEBUG:\t\t". $host_obj->hostname .": no rlogin port opened\n");
+    return(-3);
   }
 
   my $exp_obj = new Expect;
@@ -283,14 +296,14 @@ sub shell_by_rlogin {
                           } else {
                             my $fh = shift;
                             $fh->send("$first_password\n");
-                            select(undef,undef,undef,0.25);
+                            #select(undef,undef,undef,0.25);
                             exp_continue;
                           }
                         } else {
                           $spawn_ok = 1;
                           my $fh = shift;
                           $fh->send("$first_password\n");
-                          select(undef,undef,undef,0.25);
+                          #select(undef,undef,undef,0.25);
                           exp_continue;
                         }} ],
         [ 'invalid', sub { $logged_in = 0; } ],
@@ -299,7 +312,7 @@ sub shell_by_rlogin {
         [ timeout => sub { if ( ! $changed_prompt ) {
                           $changed_prompt = 1;
                           $exp_obj->send("PS1='$user->user_prompt_force'\n\n");
-                          select(undef,undef,undef,0.25);
+                          #select(undef,undef,undef,0.25);
                           exp_continue;
                         } else {
                           $logged_in = 0; $result = -1;
@@ -316,6 +329,157 @@ sub shell_by_rlogin {
     $host_obj->shell( $exp_obj );
   }
   return($result);
+}
+
+sub get_root_by_su {
+  my ($self, $host) = @_;
+
+  $self->pdebug("DEBUG:\tget_root_by_su: getting root for '$host'\n");
+
+  my $host_obj = $self->host($host);
+  my $bail = 0;     # Bail of we timeout running id
+  my $got_root = 0; # True when we actually get root
+
+ # First check to see if we are root or not
+ #
+  $host_obj->shell()->send("id\n");
+  $host_obj->shell()->expect($self->login_timeout(),
+	[ 'uid=0\(', sub { $got_root = 1; exp_continue; } ],
+	[ timeout => sub { $bail = 1; } ],
+	'-re', $self->user_prompt(),
+  );
+
+  if ( $bail ) {
+    $self->pwarn("Warning: Get root timed out for '$host'\n");
+    return(0);
+  }
+  if ( $got_root ) {
+    $self->pwarn("Warning:\tget_root_by_su: Already root on '$host', returning success\n");
+    return(1);
+  }
+
+ # Dont even try to su if we dont have any passwords
+ #
+  if ( ! $self->root_credentials() ) {
+    $self->pwarn("Warning: Get root by su failed for '$host', no passwords\n");
+    return(0);
+  }
+
+  foreach my $root_pass ( $self->root_credentials() ) {
+    $host_obj->shell->clear_accum();
+    if ( $Rover::Shell_Routines::su_login ) {
+      $host_obj->shell->send("su - \n");
+    } else {
+      $host_obj->shell->send("su \n");
+    }
+
+    my $changed_prompt = 0;
+    $host_obj->shell->expect($self->login_timeout,
+        [ 'assword:', sub { my $fh = shift;
+                #select(undef, undef, undef, 0.25);
+                $fh->clear_accum();
+                $fh->send("$root_pass\n");
+                #select(undef, undef, undef, 0.25);
+                exp_continue; } ],
+        [ timeout => sub { my $fh = shift;
+		if ( ! $changed_prompt ) {
+                  $changed_prompt = 1;
+                  $fh->send("PS1='$Rover::user_prompt_force'\n\n");
+                  #select(undef,undef,undef,0.25);
+                  exp_continue;
+                } else {
+                  $got_root = 0;
+                }} ],
+        '-re', $self->user_prompt(), );
+
+    $host_obj->shell->clear_accum();
+    $host_obj->shell->send("id\n");
+
+    my $bail = 0;       # Bail if we timeout running id
+
+    $host_obj->shell->expect($self->login_timeout,
+        [ 'uid=0', sub { $got_root = 1; exp_continue; } ],
+        [ timeout => sub { $bail = 1; } ],
+        '-re', $self->user_prompt(), );
+
+    if ( $bail ) { return(0); }
+    if ( $got_root ) { last; }
+  }
+
+  return($got_root);
+}
+
+sub get_root_by_sudo {
+  my ($self, $host) = @_;
+
+  $self->pdebug("DEBUG:\tget_root_by_sudo: getting root for '$host'\n");
+
+  my $host_obj = $self->host($host);
+  my $bail = 0;     # Bail of we timeout running id
+  my $got_root = 0; # True when we actually get root
+
+ # First check to see if we are root or not
+ #
+  $host_obj->shell()->send("id\n");
+  $host_obj->shell()->expect($self->login_timeout(),
+	[ 'uid=0\(', sub { $got_root = 1; exp_continue; } ],
+	[ timeout => sub { $bail = 1; } ],
+	'-re', $self->user_prompt(),
+  );
+
+  if ( $bail ) {
+    $self->pwarn("Warning: Get root timed out for '$host'\n");
+    return(0);
+  }
+  if ( $got_root ) {
+    $self->pwarn("Warning:\tget_root_by_sudo: Already root on '$host', returning success\n");
+    return(1);
+  }
+
+  my @passwords = $self->user_credentials();
+ # Loop through until we have no passwords or we got root.
+ # do ... until so we can run sudo even if we dont have passwords.
+ #
+  do {
+    $host_obj->shell->clear_accum();
+    $host_obj->shell->send("sudo ". $Rover::Shell_Routines::sudo_shell ."\n");
+
+    my $changed_prompt = 0;
+    my $pass;
+    $host_obj->shell->expect($self->login_timeout,
+        [ 'assword:', sub { my $fh = shift;
+		$pass = 0;
+                $pass = shift @passwords if @passwords;
+                if ( $pass ) {
+                  $fh->clear_accum();
+                  $fh->send("$pass\n");
+                  exp_continue;
+                } else {
+                  $got_root = 0;
+                }} ],
+        [ timeout => sub { my $fh = shift;
+		if ( ! $changed_prompt ) {
+                  $changed_prompt = 1;
+                  $fh->send("PS1='$Rover::user_prompt_force'\n\n");
+                  select(undef,undef,undef,0.25);
+                  exp_continue;
+                } else {
+                  $got_root = 0;
+                }} ],
+        '-re', $self->user_prompt(),);
+
+   # Validate that we got root by running id
+   #
+    $host_obj->shell->clear_accum();
+    $host_obj->shell->send("id\n");
+
+    $host_obj->shell->expect($self->login_timeout,
+        [ 'uid=0', sub { $got_root = 1; exp_continue; } ],
+        '-re', $self->user_prompt(), );
+
+  } until ( ! @passwords || $got_root );
+
+  return($got_root);
 }
 
 1;

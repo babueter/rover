@@ -23,16 +23,16 @@ sub determine_ftp_method {
 # Determine what FTP method is available.  Return appropriate
 # function based on method invoked (i.e. put or get).  Store the
 # results in the host object
-  my ($host, $method) = @_;
+  my ($host_obj, $method) = @_;
 
-  if ( $host->ftp_method_used ) {
-    my $method_used = $host->ftp_method_used;
+  if ( $host_obj->ftp_method_used ) {
+    my $method_used = $host_obj->ftp_method_used;
     my $routine = $method_used ."_". $method ;
 
     return ("Rover::Core::FTP::". $routine);
   }
 
-  my @preferred_methods = $host->ftp_methods;
+  my @preferred_methods = $host_obj->ftp_methods;
   if ( ! @preferred_methods ) {
     @preferred_methods = @Rover::Core::FTP::methods;
   }
@@ -41,14 +41,14 @@ sub determine_ftp_method {
  # the routine name accordingly
   my $ftp_method = undef;
   foreach my $proto ( @preferred_methods ) {
-    if ( Rover::Core::scan_open_port($host->hostname, $Rover::Core::FTP::method_ports{$proto}) ) {
+    if ( Rover::Core::scan_open_port($host_obj->hostname, $Rover::Core::FTP::method_ports{$proto}) ) {
       $ftp_method = $proto ."_". $method ;
       last;
     }
   }
   if ( ! $ftp_method ) { return (0); };
 
-  $host->ftp_method_used($proto);
+  $host_obj->ftp_method_used($proto);
   return("Rover::Core::FTP::". $ftp_method);
 }
 
@@ -56,15 +56,15 @@ sub determine_ftp_method {
 # SFTP put, get, and setup methods
 ############################################################
 sub sftp_put {
-  my ($host, $local_file, $remote_file) = @_;
+  my ($host_obj, $local_file, $remote_file) = @_;
 
-  if ( ! $host->ftp() ) {
-    if ( ! sftp_setup($host) ) {
+  if ( ! $host_obj->ftp() ) {
+    if ( ! sftp_setup($host_obj) ) {
       return(0);
     }
   }
 
-  my $exp_obj = $host->ftp();
+  my $exp_obj = $host_obj->ftp();
   $exp_obj->send("put $local_file $remote_file\n");
   select(undef, undef, undef, 0.25);
 
@@ -94,22 +94,22 @@ sub sftp_put {
     $exp_obj->soft_close();
     $exp_obj = 0;
 
-    return( $host->ftp(0) );
+    return( $host_obj->ftp(0) );
   }
 
   return(1);
 }
 
 sub sftp_get {
-  my ($host, $remote_file, $local_file) = @_;
+  my ($host_obj, $remote_file, $local_file) = @_;
 
-  if ( ! $host->ftp() ) {
-    if ( ! sftp_setup($host) ) {
+  if ( ! $host_obj->ftp() ) {
+    if ( ! sftp_setup($host_obj) ) {
       return(0);
     }
   }
 
-  my $exp_obj = $host->ftp();
+  my $exp_obj = $host_obj->ftp();
   $exp_obj->send("get $remote_file $local_file\n");
   select(undef, undef, undef, 0.25);
 
@@ -139,25 +139,28 @@ sub sftp_get {
     $exp_obj->soft_close();
     $exp_obj = 0;
 
-    return( $host->ftp(0) );
+    return( $host_obj->ftp(0) );
   }
 
   return(1);
 }
 
 sub sftp_setup {
+  my $self = shift;
   my $host = shift;
+  my $host_obj = $self->host($host);
 
   my $exp_obj = new Expect;
   if ( $Rover::Core::FTP::login_as_self ) {
-    $exp_obj->spawn("sftp ". $host->hostname);
+    $exp_obj->spawn("sftp ". $host_obj->hostname);
 
   } else {
-    $exp_obj->spawn("sftp ". $host->username() ."@". $host->hostname);
+    $exp_obj->spawn("sftp ". $host_obj->username() ."@". $host_obj->hostname);
   
   }
 
-  my @passwords = $host->passwords();
+  my @passwords = $host_obj->passwords();
+  if ( ! @passwords ) { @passwords = $self->user_credentials; }
   my $starting_credentials = @passwords;
 
   my $spawn_ok = 0;
@@ -174,11 +177,11 @@ sub sftp_setup {
                 exp_continue; } ],
         [ 'ogin: $', sub { $spawn_ok = 1;
                 my $fh = shift;
-                print $fh $host->username ."\n";
+                print $fh $host_obj->username ."\n";
                 exp_continue; } ],
         [ 'sername: $', sub { $spawn_ok = 1;
                 my $fh = shift;
-                print $fh $host->username ."\n";
+                print $fh $host_obj->username ."\n";
                 exp_continue; } ],
         [ 'ermission [dD]enied', sub { $failure_count++; $logged_in = 0; $failure_code = 0; exp_continue; } ],
         [ 'buffer_get', sub { $logged_in = 0; $failure_code = 0; } ],
@@ -186,7 +189,7 @@ sub sftp_setup {
         [ 'assword:', sub { $pass = shift @passwords;
                 if ( ! $pass ) {
                   $logged_in = 0;
-                  $failure_code = 0;
+                  $failure_code = -1;
                   return(0);
                 }
                 $spawn_ok = 1;
@@ -199,7 +202,7 @@ sub sftp_setup {
         [ 'assphrase', sub { $pass = shift @passwords;
                 if ( ! $pass ) {
                   $logged_in = 0;
-                  $failure_code = 0;
+                  $failure_code = -1;
                   return(0);
                 }
                 $spawn_ok = 1;
@@ -209,8 +212,8 @@ sub sftp_setup {
                 $fh->send("$pass\n");
                 select(undef, undef, undef, 0.25);
                 exp_continue; } ],
-        [ 'ew password', sub { $logged_in = 0; $failure_code = 0; } ],
-        [ 'Challenge', sub { $logged_in = 0; $failure_code = 0; } ],
+        [ 'ew password', sub { $logged_in = 0; $failure_code = -1; } ],
+        [ 'Challenge', sub { $logged_in = 0; $failure_code = -1; } ],
         [ eof => sub { if ($spawn_ok == 1) {
                   if ( $starting_credentials != $failure_count ) {
                     $logged_in = 0;
@@ -224,16 +227,16 @@ sub sftp_setup {
                   $failure_code = -2;
                 } } ],
         [ timeout => sub { $logged_in = 0; $failure_code = -1; } ],
-        '-re', '^sftp( )*>\s', );
+        '-re', '^sftp[ ]*>\s', );
 
   $exp_obj->clear_accum();
   if ( ! $logged_in ) {
-    $host->ftp(0);
+    $host_obj->ftp(0);
     return($failure_code);
   }
 
-  $host->ftp_method_used("sftp");
-  return( $host->ftp($exp_obj) );
+  $host_obj->ftp_method_used("sftp");
+  return( $host_obj->ftp($exp_obj) );
 }
 
 ############################################################
@@ -241,15 +244,15 @@ sub sftp_setup {
 ############################################################
 
 sub ftp_put {
-  my ($host, $local_file, $remote_file) = @_;
+  my ($host_obj, $local_file, $remote_file) = @_;
 
-  if ( ! $host->ftp() ) {
-    if ( ! ftp_setup($host) ) {
+  if ( ! $host_obj->ftp() ) {
+    if ( ! ftp_setup($host_obj) ) {
       return(0);
     }
   }
 
-  $ftp_obj = $host->ftp();
+  $ftp_obj = $host_obj->ftp();
   if ( ! $ftp_obj->put($local_file, $remote_file) ) {
     return(0);
   }
@@ -257,15 +260,15 @@ sub ftp_put {
 }
 
 sub ftp_get {
-   my ($host, $remote_file, $local_file) = @_;
+   my ($host_obj, $remote_file, $local_file) = @_;
 
-  if ( ! $host->ftp() ) {
-    if ( ! ftp_setup($host) ) {
+  if ( ! $host_obj->ftp() ) {
+    if ( ! ftp_setup($host_obj) ) {
       return(0);
     }
   }
 
-  $ftp_obj = $host->ftp();
+  $ftp_obj = $host_obj->ftp();
   if ( ! $ftp_obj->get($remote_file, $local_file) ) {
     return(0);
   }
@@ -273,12 +276,17 @@ sub ftp_get {
 }
 
 sub ftp_setup {
+  my $self = shift;
   my $host = shift;
+  my $host_obj = $self->host($host);
 
-  my $ftp_obj = Net::FTP->new($host->hostname());
+  my $ftp_obj = Net::FTP->new($host_obj->hostname());
 
   my $logged_in = 0;
-  foreach my $pass ($host->passwords) {
+  my @passwords = $host_obj->passwords;
+  if ( ! @passwords ) { @passwords = $self->user_credentials(); }
+
+  foreach my $pass (@passwords) {
     if ( $Rover::Core::FTP::login_as_self ) {
       if ( $ftp_obj->login($ENV{'USER'}, $pass) ) {
         $ftp_obj->binary;
@@ -286,7 +294,7 @@ sub ftp_setup {
         last;
       }
     } else {
-      if ( $ftp_obj->login($host->username, $pass) ) {
+      if ( $ftp_obj->login($host_obj->username, $pass) ) {
         $ftp_obj->binary;
         $logged_in = 1;
         last;
@@ -298,8 +306,8 @@ sub ftp_setup {
     return(0);
   }
 
-  $host->ftp_method_used("ftp");
-  return( $host->ftp($ftp_obj) );
+  $host_obj->ftp_method_used("ftp");
+  return( $host_obj->ftp($ftp_obj) );
 }
 
 

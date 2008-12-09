@@ -1,18 +1,78 @@
-WARNING: This code is not ready for use!
-WARNING: Please wait for an official release.
+ROVER 3.0
+=========
+
+DESCRIPTION
+-----------
+Rover is designed to provide a means of executing commands on remote
+systems.  The Rover perl module manages connections to remote servers
+and supplies an Expect object to other functions provided by extension
+modules.  One of the key advantages of Rover is that it runs many
+hosts in parallel, and keeps track of individual failures.
+
+Rover comes with a core module that contains standard functions
+execute, send, get_file, and put_file.  Additional modules may
+be found on the home page: http://rover.sourceforge.net
+
+Rover comes with two frontend programs, rover and rovergtk.  The first,
+rover, is ran either interactively or in batch mode from the command
+line.  Rovergtk uses the Gtk2 perl module for a graphical X user
+interface.
+
+Rover, and its accompanying extension modules, are 100% perl and do
+not require a C compiler to install.  However, depending on what
+pre-requisites are installed, you may need to compile a few other
+modules before installing Rover.
 
 
-Rover 3.0
+INSTALLATION
+------------
+To install this module type the following:
 
-Entire rewrite, Rover now can be called in an OO fasion.  Also, 
-perl ithreads are used for parallel processing.  No IPC objects 
-are used anymore.
+   perl Makefile.PL
+   make
+   make test (optional)
+   make install
 
-Graphical interface re-written to use Gtk2, with a new design.
+There are several options you can supply to "perl Makefile.PL":
+
+   --no-gtk            Do not install rovergtk, or check for Gtk
+                       perl module.
+   --no-deps           Do not check for dependencies, just install.
+   --install-deps      Attempt to install dependencies via CPAN.
+
+By default, "perl Makefile.PL" will check for dependencies and
+exit if any are missing.  Using --install-deps will attempt to
+install them using CPAN.  If CPAN has not been configured, you
+may be prompted to do so.
+
+DEPENDANCIES
+------------
+If you want to run rover you must have these perl modules:
+
+   IO::Pty
+   IO::Tty
+   IO::Stty
+   Expect
+
+Also, new to version 3.0, threads are now required.  If your
+version of perl was not configured to use ithreads, you will not
+be able to use this version of Rover.
+
+AUTHORS
+-------
+
+   Bryan A Bueter
+   Erik McLaughlin
+   Jayson A Robinson
+   John Kellner
+
+LICENCE
+-------
+This module can be used under the same terms as Perl.
 
 
 DISCLAIMER
-
+----------
 THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR
 IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
